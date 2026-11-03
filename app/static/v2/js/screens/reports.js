@@ -140,7 +140,6 @@ export function Reports() {
 
   return html`<div ...${swipe}>
     <h1 class="screen-title">${t("reports.title")}</h1>
-    <${Seg} options=${[["day", t("reports.day")], ["week", t("reports.week")], ["month", t("reports.month")], ["year", t("reports.year")], ["custom", t("reports.custom")]]} value=${p.mode} onChange=${setMode} />
     ${p.mode === "custom"
       ? html`<div class="inline-form">
           <input type="date" class="field" value=${p.from} onChange=${e => e.currentTarget.value && set({ ...p, from: e.currentTarget.value })} aria-label=${t("reports.from")} />
@@ -152,6 +151,7 @@ export function Reports() {
           <span class="monthbar-title">${label(p)}</span>
           <button type="button" class="icon-btn" onClick=${() => set(shift(p, 1))} aria-label=${t("nav.next")}>›</button>
         </div>`}
+    <${Seg} options=${[["day", t("reports.day")], ["week", t("reports.week")], ["month", t("reports.month")], ["year", t("reports.year")], ["custom", t("reports.custom")]]} value=${p.mode} onChange=${setMode} />
     <div class=${loading && report ? "dim" : ""}>
       ${error ? html`<${Empty}>${error}<//>` : !report ? html`<${Empty}>${t("common.loading")}<//>` : !report.transactions.length ? html`<${Empty}>${t("reports.empty")}<//>` : html`
         <div class="tiles">

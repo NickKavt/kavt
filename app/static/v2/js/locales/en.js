@@ -62,7 +62,6 @@ export default {
 
   "sub.title": "Subcategories",
   "sub.hint": "A deleted subcategory disappears from the current month on; its past transactions stay.",
-  "sub.none": "No subcategories yet",
   "sub.newName": "New subcategory",
   "sub.added": "Subcategory added",
   "sub.rename": "Rename",
@@ -161,7 +160,8 @@ export default {
   "catEdit.deleted": "Category deleted",
 
   "users.title": "People and roles",
-  "users.roles": "A member adds and sees the budget's expenses. An admin can also add or remove people.",
+  "role.userHint": "A member adds and sees the budget's expenses.",
+  "role.adminHint": "An admin can also add or remove people and create invitations.",
   "users.you": "you",
   "users.pending": "@{name} · hasn't opened the bot yet",
   "users.remove": "Remove from budget",

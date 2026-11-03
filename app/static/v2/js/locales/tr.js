@@ -62,7 +62,6 @@ export default {
 
   "sub.title": "Alt kategoriler",
   "sub.hint": "Silinen alt kategori bu aydan itibaren görünmez; geçmiş işlemleri kalır.",
-  "sub.none": "Henüz alt kategori yok",
   "sub.newName": "Yeni alt kategori",
   "sub.added": "Alt kategori eklendi",
   "sub.rename": "Yeniden adlandır",
@@ -161,7 +160,8 @@ export default {
   "catEdit.deleted": "Kategori silindi",
 
   "users.title": "Kişiler ve roller",
-  "users.roles": "Üye bütçenin giderlerini ekler ve görür. Yönetici ayrıca kişi ekleyip çıkarabilir.",
+  "role.userHint": "Üye bütçenin giderlerini ekler ve görür.",
+  "role.adminHint": "Yönetici ayrıca kişi ekleyip çıkarabilir ve davet oluşturabilir.",
   "users.you": "siz",
   "users.pending": "@{name} · henüz botu açmadı",
   "users.remove": "Bütçeden çıkar",

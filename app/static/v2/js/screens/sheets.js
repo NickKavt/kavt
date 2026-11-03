@@ -3,7 +3,7 @@
 
 import { html, useEffect, useState } from "../../vendor/preact-htm.js";
 import { t, errorText, locale } from "../i18n.js";
-import { money, ymd, CURRENCIES, dayTitle, parseYmd } from "../format.js";
+import { money, ymd, today, CURRENCIES, dayTitle, parseYmd } from "../format.js";
 import { state, useStore, closeSheet, toast, update } from "../store.js";
 import * as data from "../data.js";
 import { evalAmount } from "../calc.js";
@@ -124,8 +124,8 @@ function Subcategories({ categoryId }) {
   };
   const subs = details?.subcategories || [];
   return html`<${Sheet} title=${t("sub.title")}>
-    <div class="muted small">${t("sub.hint")}</div>
-    <div class="group">
+    ${subs.length > 0 && html`<div class="muted small">${t("sub.hint")}</div>`}
+    ${subs.length > 0 && html`<div class="group">
       ${subs.map(sub => editing === sub.id
         ? html`<div class="row row-edit">
             <input class="field" value=${editName} onInput=${e => setEditName(e.currentTarget.value)} autofocus
@@ -137,8 +137,7 @@ function Subcategories({ categoryId }) {
             <button type="button" class="chip chip-icon" onClick=${() => { setEditing(sub.id); setEditName(sub.name); }} aria-label=${t("sub.rename")}>✎</button>
             <button type="button" class="chip chip-icon chip-danger" onClick=${() => remove(sub)} aria-label=${t("common.delete")}>✕</button>
           </div>`)}
-      ${!subs.length && html`<div class="row muted">${t("sub.none")}</div>`}
-    </div>
+    </div>`}
     <div class="inline-form">
       <input class="field" placeholder=${t("sub.newName")} value=${name} onInput=${e => setName(e.currentTarget.value)} onKeyDown=${e => e.key === "Enter" && add()} maxlength="60" />
       <button type="button" class="btn btn-primary btn-small" onClick=${add}>${t("common.add")}</button>
@@ -175,14 +174,16 @@ function SavingsStart() {
   const initial = summary?.initial;
   const [amount, setAmount] = useState(initial ? String(initial.amount).replace(".", ",") : "");
   const [currency, setCurrency] = useState(initial?.currency || summary?.currency || "₺");
+  // Older starting balances were stored on 2000-01-01; offer today for those.
+  const [date, setDate] = useState(initial && initial.transaction_date > "2000-01-01" ? initial.transaction_date : ymd(today()));
   const save = async () => {
     const value = evalAmount(amount);
     if (!(value > 0)) return tell(t("form.enterAmount"));
     // One starting balance: an existing one is changed, never added a second time.
     const ok = await attempt(
       () => initial
-        ? data.updateOperation(initial.id, { amount: value, currency })
-        : data.addOperation({ category: savingsCategory(), amount: value, currency, note: INITIAL_NOTE, date: "2000-01-01" }),
+        ? data.updateOperation(initial.id, { amount: value, currency, transaction_date: date })
+        : data.addOperation({ category: savingsCategory(), amount: value, currency, note: INITIAL_NOTE, date }),
       t("savings.startSaved"));
     if (ok) {
       closeSheet();
@@ -200,6 +201,7 @@ function SavingsStart() {
     <div class="muted small">${t("savings.startHint")}</div>
     <div class="form">
       <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${setCurrency} autofocus onEnter=${save} />
+      <${DateField} value=${date} onChange=${setDate} />
       <button type="button" class="btn btn-primary" onClick=${save}>${t("common.save")}</button>
       ${initial && html`<button type="button" class="btn btn-danger" onClick=${remove}>${t("savings.removeStart")}</button>`}
     </div>
@@ -293,6 +295,7 @@ function Invites() {
     <div class="form">
       <div class="muted small">${t("invite.hint")}</div>
       <${Seg} options=${[["user", t("role.user")], ["admin", t("role.admin")]]} value=${role} onChange=${setRole} />
+      <div class="muted small">${role === "admin" ? t("role.adminHint") : t("role.userHint")}</div>
       <button type="button" class="btn btn-primary" onClick=${make}>🔗 ${t("invite.make")}</button>
       ${made && html`<input class="field donate-address" readonly value=${made} onFocus=${e => e.currentTarget.select()} />
         <button type="button" class="btn" onClick=${share}>${navigator.share ? t("invite.share") : t("donate.copy")}</button>`}
@@ -356,7 +359,6 @@ function Users() {
     if (await attempt(() => data.removeUser(u.id), t("users.removed"))) reload();
   };
   return html`<${Sheet} title=${t("users.title")}>
-    <div class="muted small">${t("users.roles")}</div>
     <div class="group">
       ${users === null && html`<div class="row muted">${t("common.loading")}</div>`}
       ${users?.map(u => {
@@ -383,6 +385,7 @@ function Users() {
       <input class="field" placeholder=${t("users.queryPlaceholder")} value=${query} onInput=${e => setQuery(e.currentTarget.value)} autocapitalize="off" autocomplete="off" spellcheck="false" />
       <input class="field" placeholder=${t("users.namePlaceholder")} value=${name} onInput=${e => setName(e.currentTarget.value)} />
       <${Seg} options=${[["user", t("role.user")], ["admin", t("role.admin")]]} value=${role} onChange=${setRole} />
+      <div class="muted small">${role === "admin" ? t("role.adminHint") : t("role.userHint")}</div>
       <button type="button" class="btn btn-primary" onClick=${add}>${t("users.add")}</button>
     </div>`}
   <//>`;
