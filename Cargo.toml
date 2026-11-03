@@ -2,7 +2,7 @@
 name = "budget-server"
 version = "1.0.0"
 edition = "2024"
-description = "Self-hosted family budget that runs as a Telegram Mini App"
+description = "Self-hosted family budget: shared by invite, multi-currency, savings with interest"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/NickKavt/kavt"
 
@@ -25,6 +25,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 argon2 = "0.6"
+sha1 = "0.11"
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 
 [profile.release]
 strip = true

@@ -3,7 +3,7 @@
 import { html } from "../../vendor/preact-htm.js";
 import { t, LANGS, currentLang, setLang, errorText } from "../i18n.js";
 import { useStore, openSheet, update, toast } from "../store.js";
-import { endOtherSessions, signOut } from "../data.js";
+import { endOtherSessions, signOut, exportCsv } from "../data.js";
 import { ask, haptic, telegramUser, openLink, tg } from "../tg.js";
 import { Row, Chips, lastCurrency } from "../ui.js";
 import { CURRENCIES } from "../format.js";
@@ -14,6 +14,13 @@ export function Manage() {
   const s = useStore();
   const cats = (s.home?.categories || []).filter(c => c.type === "expense" || c.type === "savings");
   const isAdmin = s.me?.role === "admin" || s.me?.role === "owner";
+  const download = async () => {
+    try {
+      await exportCsv();
+    } catch (e) {
+      toast(errorText(e), "error");
+    }
+  };
   return html`<div>
     <h1 class="screen-title">${t("manage.title")}</h1>
     <div class="section-title">${t("manage.categories")}</div>
@@ -28,6 +35,12 @@ export function Manage() {
       ${isAdmin
         ? html`<${Row} icon="👥" title=${t("users.title")} onClick=${() => openSheet("users", {})} />`
         : html`<div class="row muted">${t("manage.membersOnlyAdmins")}</div>`}
+    </div>
+    <div class="section-title">${t("manage.data")}</div>
+    <div class="group">
+      <${Row} icon="🔁" title=${t("recurring.title")} subtitle=${t("recurring.sub")} onClick=${() => openSheet("recurring", {})} />
+      <${Row} icon="⬇️" title=${t("export.title")} subtitle=${t("export.sub")} onClick=${download} />
+      <${Row} icon="⬆️" title=${t("import.title")} subtitle=${t("import.sub")} onClick=${() => openSheet("import", {})} />
     </div>
   </div>`;
 }
@@ -98,6 +111,7 @@ export function Settings() {
     <div class="section-title">${t("settings.signIn")}</div>
     <div class="group">
       ${s.me?.has_password && html`<${Row} icon="🔑" title=${t("auth.changePassword")} subtitle=${t("auth.loginIs", { login: s.me.login })} onClick=${() => openSheet("password", {})} />`}
+      ${s.me?.has_password && html`<${Row} icon="🛡️" title=${t("tfa.title")} subtitle=${s.me.totp ? t("tfa.isOn") : t("tfa.isOff")} onClick=${() => openSheet("twoFactor", {})} />`}
       <${Row} icon="📱" title=${t("sessions.title")} onClick=${() => openSheet("sessions", {})} />
       <${Row} icon="🔐" title=${t("settings.signOutOthers")} onClick=${others} />
       <${Row} icon="↩️" title=${t("settings.signOut")} tone="danger" onClick=${out} />

@@ -10,6 +10,7 @@ import { evalAmount } from "../calc.js";
 import { haptic, ask, tell, openLink, openTelegramLink } from "../tg.js";
 import { Sheet, Seg, Chips, MoneyField, DateField, Row, Empty, lastCurrency } from "../ui.js";
 import { AddForm, INITIAL_NOTE, pct } from "./category.js";
+import { TOOL_SHEETS } from "./tools.js";
 
 async function attempt(fn, done) {
   try {
@@ -579,7 +580,7 @@ function device(ua = "") {
   return ua ? ua.slice(0, 40) : t("sessions.unknown");
 }
 
-const SHEETS = { quickAdd: QuickAdd, editOperation: EditOperation, subcategories: Subcategories, savingsGoal: SavingsGoal, savingsStart: SavingsStart, categoryEditor: CategoryEditor, users: Users, sessions: Sessions, donate: Donate, account: AccountEditor, transfer: Transfer, password: PasswordSheet };
+const SHEETS = { quickAdd: QuickAdd, editOperation: EditOperation, subcategories: Subcategories, savingsGoal: SavingsGoal, savingsStart: SavingsStart, categoryEditor: CategoryEditor, users: Users, sessions: Sessions, donate: Donate, account: AccountEditor, transfer: Transfer, password: PasswordSheet, ...TOOL_SHEETS };
 
 export function SheetHost() {
   const sheet = useStore().sheet;

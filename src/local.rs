@@ -23,7 +23,7 @@ use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::{ApiError, ApiResult, AppRef, AppState, admin, auth, db, limit, user};
+use crate::{ApiError, ApiResult, AppRef, AppState, admin, auth, db, limit, totp, user};
 
 const INVITE_DAYS: i64 = 7;
 const LOCAL_PREFIX: &str = "local:";
@@ -157,6 +157,8 @@ pub async fn register(State(state): AppRef, ConnectInfo(addr): ConnectInfo<Socke
 pub struct LoginIn {
     login: String,
     password: String,
+    /// The second step, when two-factor sign-in is on: a code from the app or a recovery code.
+    code: Option<String>,
 }
 
 pub async fn login(State(state): AppRef, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap, Json(l): Json<LoginIn>) -> ApiResult<Response> {
@@ -170,7 +172,10 @@ pub async fn login(State(state): AppRef, ConnectInfo(addr): ConnectInfo<SocketAd
     };
     let good = verify_password(hash, l.password).await;
     match id {
-        Some(id) if good => signed_in(&state, &headers, addr, id).await,
+        Some(id) if good => {
+            totp::check(&state.db, id, l.code.as_deref()).await?;
+            signed_in(&state, &headers, addr, id).await
+        }
         _ => Err(ApiError::status(401, "Неверный логин или пароль")),
     }
 }
@@ -285,6 +290,22 @@ pub async fn accept_invite(
             Err(e)
         }
     }
+}
+
+/// `budget-server reset-password <login>`: a new random password, printed once; the person's
+/// sessions end.
+pub async fn reset_password(db: &sqlx::PgPool, login: &str) -> anyhow::Result<()> {
+    let login = login.trim().to_lowercase();
+    let password = hex::encode(rand::rng().random::<[u8; 8]>());
+    let hash = hash_password(password.clone()).await.map_err(|_| anyhow::anyhow!("hash failed"))?;
+    let id: Option<i64> = sqlx::query_scalar("UPDATE users SET password_hash = $2 WHERE login = $1 RETURNING id")
+        .bind(&login).bind(hash)
+        .fetch_optional(db)
+        .await?;
+    let id = id.ok_or_else(|| anyhow::anyhow!("no user with the login {login}"))?;
+    sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(id).execute(db).await?;
+    println!("New password for {login}: {password}\nChange it in Settings after signing in.");
+    Ok(())
 }
 
 /// Whether this person signs in with a password, for Settings.

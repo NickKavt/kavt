@@ -1,14 +1,19 @@
-//! Budget: a self-hosted family budget that runs as a Telegram Mini App.
+//! Budget: a self-hosted family budget for the browser, and optionally a Telegram Mini App.
 //!
 //! Every person has their own budget; data is shared only between people who added each other.
-//! `budget-server health` checks a running server (used by the Docker health check).
+//! `budget-server health` checks a running server (used by the Docker health check);
+//! `reset-password <login>` and `reset-2fa <login>` help someone locked out.
 
 mod auth;
 mod db;
 mod limit;
 mod local;
+mod import;
+mod migrate;
 mod rates;
+mod recurring;
 mod savings;
+mod totp;
 
 use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 
@@ -262,7 +267,7 @@ async fn me(State(state): AppRef, headers: HeaderMap) -> ApiResult<Json<serde_js
     Ok(Json(json!({
         "id": me.id, "telegram_id": me.telegram_id, "username": null, "first_name": name,
         "last_name": null, "language_code": me.language_code, "role": me.role,
-        "login": login, "has_password": has_password,
+        "login": login, "has_password": has_password, "totp": totp::enabled(&state.db, me.id).await?,
     })))
 }
 
@@ -318,7 +323,8 @@ async fn home(State(state): AppRef, headers: HeaderMap, Query(q): Query<MonthQue
     let me = user(&state, &headers).await?;
     let budget = me.budget_owner_id;
     let month = q.bounds();
-    // Interest due on savings accounts is in before the month's totals are counted.
+    // Recurring operations and interest due are in before the month's totals are counted.
+    recurring::sync_budget(&state.db, budget).await?;
     savings::sync_budget(&state.db, budget).await?;
     Ok(Json(json!({
         "categories": db::list_categories(&state.db, budget, Some(&month)).await?,
@@ -1155,6 +1161,9 @@ async fn worker(db: PgPool, every: Duration) {
         // Interest is paid on time even when nobody opens the app; once an hour is plenty.
         if last_interest.is_none_or(|t: std::time::Instant| t.elapsed() >= Duration::from_secs(3600)) {
             last_interest = Some(std::time::Instant::now());
+            if let Err(e) = recurring::sync_all(&db).await {
+                tracing::warn!(error = %e, "recurring operations failed");
+            }
             if let Err(e) = savings::sync_all(&db).await {
                 tracing::warn!(error = %e, "interest accrual failed");
             }
@@ -1189,6 +1198,8 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/savings/accounts/{account_id}", patch(update_account).delete(stop_account))
         .route("/api/savings/withdraw", post(withdraw))
         .route("/api/savings/transfer", post(transfer))
+        .route("/api/recurring", post(recurring::create))
+        .route("/api/recurring/{recurring_id}", patch(recurring::update).delete(recurring::stop))
         .route_layer(from_fn_with_state(write_limit, limit::limit));
 
     let login = Router::new()
@@ -1202,6 +1213,10 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/auth/register", post(local::register))
         .route("/api/auth/password", post(local::change_password))
         .route("/api/invite/{token}", post(local::accept_invite))
+        .route("/api/2fa/setup", post(totp::setup))
+        .route("/api/2fa/enable", post(totp::enable))
+        .route("/api/2fa/disable", post(totp::disable))
+        .route("/api/2fa/recovery-codes", post(totp::recovery_codes))
         .route_layer(from_fn_with_state(password_limit, limit::limit));
     // Asked on every start before signing in; an invitation link can't be guessed (192 bits).
     let public = Router::new()
@@ -1226,7 +1241,16 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/month-summary", get(month_summary).route_layer(reads.clone()))
         .route("/api/savings-summary", get(savings_summary).route_layer(reads.clone()))
         .route("/api/savings/accounts", get(list_accounts).route_layer(reads.clone()).post(create_account))
-        .route("/api/rates", get(exchange_rates).route_layer(reads))
+        .route("/api/rates", get(exchange_rates).route_layer(reads.clone()))
+        .route("/api/recurring", get(recurring::list).route_layer(reads.clone()))
+        .route("/api/export.csv", get(import::export).route_layer(reads))
+        // A whole history is a few megabytes of JSON; one import at a time is plenty.
+        .route(
+            "/api/import",
+            post(import::import)
+                .layer(axum::extract::DefaultBodyLimit::max(32 << 20))
+                .route_layer(from_fn_with_state(leak(Limiter::new(3, Duration::from_secs(3))), limit::limit)),
+        )
         .route("/api/report", get(report).route_layer(from_fn_with_state(report_limit, limit::limit)))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{suffix}", delete(delete_session))
@@ -1266,22 +1290,27 @@ async fn health_check() -> anyhow::Result<()> {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    if env::args().nth(1).as_deref() == Some("health") {
-        return health_check().await;
+    let args: Vec<String> = env::args().skip(1).collect();
+    match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["health"] => return health_check().await,
+        [cmd @ ("reset-password" | "reset-2fa"), login] => {
+            let url = env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
+            let db = PgPoolOptions::new().max_connections(1).connect(&url).await?;
+            return if cmd == "reset-2fa" { totp::reset(&db, login).await } else { local::reset_password(&db, login).await };
+        }
+        [] => {}
+        _ => anyhow::bail!("usage: budget-server [health | reset-password <login> | reset-2fa <login>]"),
     }
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let cfg = Config::from_env();
     if cfg.bot_token.is_empty() {
-        tracing::warn!("TELEGRAM_BOT_TOKEN is not configured: Telegram login will fail");
-    }
-    if cfg.owner_telegram_id.is_none() {
-        tracing::info!("OWNER_TELEGRAM_ID is not set: the first person to sign in becomes the owner");
+        tracing::info!("TELEGRAM_BOT_TOKEN is not set: sign-in with a password only");
     }
     let database_url = env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
     let db = PgPoolOptions::new().max_connections(8).acquire_timeout(Duration::from_secs(10)).connect(&database_url).await?;
-    db::init(&db).await?;
+    migrate::run(&db).await?;
     tokio::spawn(worker(db.clone(), Duration::from_secs(env_or("BUDGET_WORKER_INTERVAL_SECONDS", 60))));
 
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());

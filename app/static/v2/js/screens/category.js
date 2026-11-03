@@ -4,7 +4,7 @@ import { html, useEffect, useState } from "../../vendor/preact-htm.js";
 import { t, errorText, locale } from "../i18n.js";
 import { money, usedCurrencies, ymd, parseYmd, today, sameMonth, dayTitle, weekday, monthStart, addMonths } from "../format.js";
 import { useStore, openSheet, toast } from "../store.js";
-import { loadDetails, addOperation, refresh, setMonth, loadAccounts, withdraw } from "../data.js";
+import { loadDetails, addOperation, refresh, setMonth, loadAccounts, withdraw, createRecurring } from "../data.js";
 import { evalAmount } from "../calc.js";
 import { haptic, tell, tg } from "../tg.js";
 import { back } from "../router.js";
@@ -14,6 +14,7 @@ import { MonthBar } from "./home.js";
 /** Marks the savings starting balance; the server leaves it out of month balances. */
 export const INITIAL_NOTE = "Первоначальная сумма";
 import { useSwipe } from "./swipe.js";
+import { EVERY } from "./tools.js";
 
 /** Date a new operation gets: today in the current month, else the month's first day. */
 export function defaultDate(month) {
@@ -44,6 +45,8 @@ export function AddForm({ category, details, onSaved, autofocus }) {
   // Savings can be added to or taken out of.
   const [mode, setMode] = useState("add");
   const out = category.type === "savings" && mode === "out";
+  // "" or week, month, year: the operation then repeats from its date (src/recurring.rs).
+  const [repeat, setRepeat] = useState("");
   // The month on screen changed: a new operation goes to that month by default.
   useEffect(() => setDate(defaultDate(s.month)), [ymd(s.month)]);
   useEffect(() => {
@@ -58,7 +61,9 @@ export function AddForm({ category, details, onSaved, autofocus }) {
     }
     setBusy(true);
     try {
-      await (out ? withdraw : addOperation)({ category, subcategoryId: sub, amount: value, currency, note: note.trim(), date });
+      const op = { category, subcategoryId: sub, amount: value, currency, note: note.trim(), date };
+      if (repeat && !out) await createRecurring({ ...op, categoryId: sub ?? category.id, every: repeat, start: date });
+      else await (out ? withdraw : addOperation)(op);
       haptic("success");
       rememberCurrency(currency);
       try {
@@ -67,7 +72,9 @@ export function AddForm({ category, details, onSaved, autofocus }) {
       setAmount("");
       setNote("");
       const d = parseYmd(date);
-      toast(sameMonth(d, s.month) ? t("form.saved") : t("form.savedOn", { date: dayTitle(d) }));
+      const saved = sameMonth(d, s.month) ? t("form.saved") : t("form.savedOn", { date: dayTitle(d) });
+      toast(repeat && !out ? `${saved} · ${t("every." + repeat)}` : saved);
+      setRepeat("");
       await refresh();
       onSaved?.();
     } catch (e) {
@@ -87,6 +94,13 @@ export function AddForm({ category, details, onSaved, autofocus }) {
       extra=${html`<button type="button" class="chip chip-icon" onClick=${() => openSheet("subcategories", { categoryId: category.id })} aria-label=${t("sub.manage")}>✎</button>`} />`}
     <input class="field" placeholder=${t("form.note")} value=${note} onInput=${e => setNote(e.currentTarget.value)} maxlength="200" />
     <${DateField} value=${date} onChange=${setDate} />
+    ${!out && html`<label class="date-row repeat-row">
+      <span class="date-label">🔁 ${t("form.repeat")}</span>
+      <select class="field" value=${repeat} onChange=${e => setRepeat(e.currentTarget.value)}>
+        <option value="">${t("form.noRepeat")}</option>
+        ${EVERY.map(x => html`<option value=${x}>${t("every." + x)}</option>`)}
+      </select>
+    </label>`}
     <button type="button" class="btn btn-primary" disabled=${busy} onClick=${save}>${label}</button>
   </div>`;
 }

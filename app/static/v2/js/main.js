@@ -78,6 +78,8 @@ const NOT_INVITED = "Вас ещё не пригласили в бюджет";
 async function signedIn(me) {
   update({ auth: null, me, home: null });
   update({ home: cachedHome(state.month), booting: false });
+  // Signing in answers with the person only; Settings also needs how they sign in.
+  if (!("has_password" in me)) api("/api/me").then(full => update({ me: full })).catch(() => {});
   refreshRates();
   await refresh();
 }

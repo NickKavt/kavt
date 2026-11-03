@@ -8,6 +8,8 @@ A self-hosted family budget. Install it with Docker, open it in a browser and ad
 - A savings goal and a starting balance.
 - Savings accounts with interest: a flexible account paid monthly or a term deposit paid at maturity. Interest is counted daily, tax is withheld, and the payments are added for you. Rate changes apply from their day.
 - Withdrawals from savings and transfers between accounts; interest follows the money.
+- Recurring operations (rent, subscriptions, salary): weekly, monthly or yearly, added on their day.
+- CSV export of all operations, and CSV import from a bank, Excel, Firefly III, Actual Budget or ezBookkeeping: you pick the columns, missing categories are created, and importing the same file twice adds nothing.
 - Optional exchange rates (off by default, per device): the balance also in roubles, dollars or euros, with rates from the Central Bank of Türkiye, the Bank of Russia or the ECB and a link to compare on Google. Only then does the server contact the chosen source, once an hour at most.
 - One budget for the family: the owner invites people with a one-time link, as members or admins.
 - Members and admins, plus sessions you can end from the app.
@@ -65,6 +67,8 @@ On a phone, add the app to the home screen:
 
 Open **Manage → People and roles → Create a link** and send the link in any messenger. Whoever opens it picks a login and a password and joins your budget, as a member or an admin, whichever you chose. A link works once and for seven days. Unused links are listed there, and you can revoke them.
 
+Anyone with a password can turn on **two-step sign-in** in Settings: after the password, the app asks for a code from an authenticator app (Google Authenticator, 2FAS, Bitwarden, Passwords on iPhone and others). Ten one-time recovery codes are shown once, for when the phone isn't at hand.
+
 Passwords are stored as Argon2id hashes. A sign-in lasts 30 days on a device. Changing your password signs out your other devices. Repeated wrong passwords are slowed down.
 
 ### Telegram (optional)
@@ -75,13 +79,22 @@ The same budget can also open inside Telegram:
 
 Inside Telegram people sign in with Telegram, without a password. In **People and roles** the owner can then also add someone by @username or Telegram ID. A person who signed in with a password and the same person in Telegram are two separate accounts.
 
+### Locked out
+
+On the server, in the folder with `compose.yaml`:
+
+```sh
+docker compose exec app /app/budget-server reset-password <login>   # prints a new password
+docker compose exec app /app/budget-server reset-2fa <login>        # turns two-step sign-in off
+```
+
 ## Update
 
 ```sh
 docker compose pull && docker compose up -d
 ```
 
-The database schema is updated on start.
+The database is migrated on start: each file in `migrations/` is applied once, in order, and recorded in the `schema_migrations` table. Back up before a big update. A database migrated by a newer version refuses to start with an older one, so going back means restoring the backup.
 
 ## Back up
 
@@ -135,9 +148,13 @@ Or run `docker compose up -d --build` to build the image locally.
 | `src/auth.rs` | Telegram sign-in check and sessions |
 | `src/savings.rs` | Savings accounts: daily interest, payments, tax |
 | `src/rates.rs` | Exchange rates from the three sources |
+| `src/recurring.rs` | Recurring operations |
+| `src/import.rs` | CSV export and import |
+| `src/totp.rs` | Two-step sign-in: codes from an authenticator app, recovery codes |
+| `src/migrate.rs` | Applies `migrations/` in order |
 | `src/db.rs` | Queries: categories, totals by currency, month summary with carry-over, savings |
 | `src/limit.rs` | Rate limits |
-| `migrations/schema.sql` | Schema; idempotent, applied on every start |
+| `migrations/` | Schema changes, one numbered file each, applied once in order on start (`src/migrate.rs`) |
 | `app/static/v2` | The interface: `js/screens/` for screens, `js/locales/` for texts |
 
 ## Support the project

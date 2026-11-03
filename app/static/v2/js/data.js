@@ -111,3 +111,29 @@ export const loadSessions = () => api("/api/sessions");
 export const endSession = suffix => api(`/api/sessions/${suffix}`, { method: "DELETE" });
 export const endOtherSessions = () => api("/api/auth/revoke-others", { method: "POST" });
 export const signOut = () => api("/api/auth/logout", { method: "POST" });
+
+export const loadRecurring = () => api("/api/recurring");
+/** A repeating operation from its first day; the server adds what is due right away. */
+export const createRecurring = ({ categoryId, amount, currency, note, every, start }) =>
+  api("/api/recurring", { method: "POST", body: { category_id: categoryId, amount, currency, note: note || "", every, start_date: start } });
+export const updateRecurring = (id, patch) => api(`/api/recurring/${id}`, { method: "PATCH", body: patch });
+export const stopRecurring = id => api(`/api/recurring/${id}`, { method: "DELETE" });
+
+export const importRows = (rows, dryRun) => api("/api/import", { method: "POST", body: { rows, dry_run: dryRun } });
+
+export const twoFactorSetup = () => api("/api/2fa/setup", { method: "POST" });
+export const twoFactorEnable = code => api("/api/2fa/enable", { method: "POST", body: { code } });
+export const twoFactorDisable = code => api("/api/2fa/disable", { method: "POST", body: { code } });
+export const newRecoveryCodes = code => api("/api/2fa/recovery-codes", { method: "POST", body: { code } });
+
+/** Saves the budget as a CSV file. */
+export async function exportCsv() {
+  const res = await fetch("/api/export.csv", { credentials: "same-origin" });
+  if (!res.ok) throw Object.assign(new Error((await res.text()).trim()), { status: res.status });
+  const url = URL.createObjectURL(await res.blob());
+  const a = Object.assign(document.createElement("a"), { href: url, download: `budget-${ymd(new Date())}.csv` });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+}

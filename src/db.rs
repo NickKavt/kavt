@@ -45,10 +45,8 @@ pub fn db_datetime_to_rfc3339(raw: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Schema and seed data
+// Seed data
 // ---------------------------------------------------------------------------
-const SCHEMA: &str = include_str!("../migrations/schema.sql");
-
 const SEED_EXPENSES: [(&str, &str, &str); 5] = [
     ("Продукты", "🛒", "#e0af68"),
     ("Здоровье", "🏥", "#9ece6a"),
@@ -56,11 +54,6 @@ const SEED_EXPENSES: [(&str, &str, &str); 5] = [
     ("Развлечения", "🎉", "#bb9af7"),
     ("Другое", "📦", "#545c7e"),
 ];
-
-pub async fn init(db: &PgPool) -> anyhow::Result<()> {
-    sqlx::raw_sql(SCHEMA).execute(db).await?;
-    Ok(())
-}
 
 /// A budget without categories (a new person, or one who left a shared budget and never had
 /// their own) gets the standard set. Existing budgets are left exactly as their users made them.

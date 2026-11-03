@@ -340,3 +340,27 @@ select.field { appearance: none; -webkit-appearance: none; }
   .sheet-handle { display: none; }
 }
 @keyframes pop { from { transform: scale(0.97); opacity: 0; } }
+
+/* Recurring operations, CSV import, two-factor sign-in */
+.sheet-hint { margin: 0 0 10px; }
+.recurring + .recurring { border-top: 1px solid var(--line); }
+.recurring .row { border: 0; }
+.recurring-edit { padding: 4px 14px 14px; }
+.repeat-row { display: flex; align-items: center; gap: 10px; }
+.repeat-row .date-label { flex: none; }
+.repeat-row select { flex: 1; min-width: 0; }
+.import-file { display: block; text-align: center; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.import-map { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.import-col { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); min-width: 0; }
+.import-col select { min-height: 40px; padding: 8px 10px; font-size: 14px; }
+.import-preview { display: flex; flex-direction: column; gap: 6px; }
+.tfa-qr { align-self: center; padding: 10px; border-radius: 12px; background: #fff; line-height: 0; }
+.tfa-qr svg { width: 200px; height: 200px; }
+.tfa-state { font-weight: 600; }
+.code-input { font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 3px; text-align: center; }
+.recovery-codes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 12px; border-radius: 12px; background: var(--soft); }
+.recovery-codes code { font: 15px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; text-align: center; }
+.hidden { display: none; }
+.auth-fields { display: flex; flex-direction: column; gap: 12px; }
+.code-input::placeholder { font: 15px/1.2 system-ui, sans-serif; letter-spacing: 0; }
+a.btn { display: block; text-align: center; text-decoration: none; }

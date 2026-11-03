@@ -91,6 +91,15 @@ const SERVER_ERRORS = {
   "Дата не может быть в будущем": "err.futureDate",
   "Дата начала — не раньше чем 10 лет назад": "err.startTooOld",
   "Введите @username (латиница, цифры и _, от 4 до 32 символов), Telegram ID или ссылку t.me": "err.badUsername",
+  "Нужен код из приложения": "err.codeNeeded",
+  "Неверный код": "err.wrongCode",
+  "Двухэтапный вход уже включён": "err.tfaOn",
+  "Сначала добавьте ключ в приложение": "err.tfaPending",
+  "Двухэтапный вход выключен": "err.tfaOff",
+  "У вас вход через Telegram, второй шаг не нужен": "err.tfaTelegram",
+  "Регулярная операция не найдена": "err.recurringNotFound",
+  "Неизвестный период": "err.unknownPeriod",
+  "Слишком много строк, разделите файл": "err.tooManyRows",
 };
 
 /** A message for any failed request, in the chosen language. */
