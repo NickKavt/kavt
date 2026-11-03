@@ -280,6 +280,16 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
     } else {
         tx.commit().await?;
         tracing::info!(budget, added, skipped, "operations imported");
+        // Rates of the imported operations, each on its own day, in the background.
+        let db = state.db.clone();
+        tokio::spawn(async move {
+            // A batch at a time; a source that doesn't answer is left for the hourly run.
+            while let Ok(n) = crate::rates::fill(&db, Some(budget)).await {
+                if n == 0 {
+                    break;
+                }
+            }
+        });
     }
     Ok(Json(json!({ "added": added, "skipped": skipped, "created": created, "dry_run": body.dry_run })))
 }

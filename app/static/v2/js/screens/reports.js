@@ -4,7 +4,7 @@ import { html, useEffect, useState } from "../../vendor/preact-htm.js";
 import { t, errorText } from "../i18n.js";
 import { money, usedCurrencies, ymd, parseYmd, today, addDays, daysBetween, fmt, weekday, shortMonth, monthTitle } from "../format.js";
 import { loadReport } from "../data.js";
-import { state, update, openSheet } from "../store.js";
+import { state, update, openSheet, useStore } from "../store.js";
 import { Seg, Chips, Empty } from "../ui.js";
 import { OperationList } from "./category.js";
 import { useSwipe } from "./swipe.js";
@@ -96,6 +96,31 @@ function Bars({ p, report, currency, from, to }) {
   </div>`;
 }
 
+/** Expenses and income of the period in the main currency, each operation at its own day's rate. */
+function InMain({ report }) {
+  const settings = useStore().home?.settings;
+  const main = settings?.main_currency;
+  if (!main || settings.rate_source === "off") return null;
+  const sums = { expense: 0, income: 0 };
+  let missing = 0, foreign = false;
+  for (const op of report.transactions) {
+    if (!(op.type in sums)) continue;
+    if (op.currency === main) sums[op.type] += op.amount;
+    else if (op.rate && op.rate_to === main) {
+      sums[op.type] += op.amount * op.rate;
+      foreign = true;
+    } else missing++;
+  }
+  // Worth a line only when other currencies are in the period.
+  if (!foreign && !missing) return null;
+  return html`<div class="card in-main">
+    <div class="muted small">${t("reports.inMain", { cur: main })}</div>
+    <div class="in-main-row"><span>${t("kind.expenses")}</span><b>${money(sums.expense, main)}</b></div>
+    <div class="in-main-row"><span>${t("kind.income")}</span><b>${money(sums.income, main)}</b></div>
+    ${missing > 0 && html`<div class="muted small">${t("reports.inMainMissing", { n: missing })}</div>`}
+  </div>`;
+}
+
 function Categories({ report, currency }) {
   const rows = report.categories.map(c => ({ ...c, v: c.totals?.[currency] || 0 })).filter(c => c.v > 0).sort((a, b) => b.v - a.v);
   if (!rows.length) return null;
@@ -160,6 +185,7 @@ export function Reports() {
             <div class="tile-value">${usedCurrencies(report[k]).length ? usedCurrencies(report[k]).map(c => html`<span>${money(report[k][c], c)}</span>`) : html`<span class="muted">0</span>`}</div>
           </div>`)}
         </div>
+        <${InMain} report=${report} />
         ${currencies.length > 1 && html`<${Chips} items=${currencies.map(c => [c, c])} value=${currency} onChange=${c => set({ ...p, currency: c })} />`}
         ${currency && html`<div class="report-charts">
           <${Bars} p=${p} report=${report} currency=${currency} from=${from} to=${to} />

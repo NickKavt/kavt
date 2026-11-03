@@ -392,4 +392,13 @@ export default {
   "err.recurringNotFound": "Регулярная операция не найдена",
   "err.unknownPeriod": "Неизвестный период",
   "err.tooManyRows": "Слишком много строк, разделите файл",
+  "rates.opRate": "Курс на {day}: {rate} · ≈ {sum}",
+  "reports.inMain": "Всего в {cur} по курсу на день операций",
+  "reports.inMainMissing": "без {n} операций: курс для них ещё не найден",
+  "budgetRates.title": "Главная валюта и курс",
+  "budgetRates.hint": "Операции в других валютах пересчитываются в главную по курсу на свой день, и этот курс запоминается.",
+  "budgetRates.main": "Главная валюта",
+  "budgetRates.source": "Курс",
+  "budgetRates.off": "Не пересчитывать",
+  "budgetRates.saved": "Сохранено. Курсы пересчитываются",
 };

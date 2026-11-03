@@ -130,6 +130,11 @@ export function signed(op) {
   return op.source === "withdrawal" ? -op.amount : op.amount;
 }
 
+/** An operation in another currency, in the budget's main one at the rate of its own day. */
+export function converted(op) {
+  return op.rate && op.rate_to && op.rate_to !== op.currency ? money(op.amount * op.rate, op.rate_to) : "";
+}
+
 export function OperationList({ ops, onOpen, showCategory, fallbackTitle = "" }) {
   if (!ops.length) return html`<${Empty}>${t("cat.noOperations")}<//>`;
   const days = new Map();
@@ -158,7 +163,10 @@ export function OperationList({ ops, onOpen, showCategory, fallbackTitle = "" })
             ${note && html`<span class="op-note">${note}</span>`}
             ${op.actor_name && html`<span class="op-who">${op.actor_name}</span>`}
           </span>
-          <span class=${"op-amount op-" + (taken ? "withdrawal" : op.type)}>${op.type === "expense" || taken ? "−" : "+"}${money(op.amount, op.currency)}</span>
+          <span class="op-amounts">
+            <span class=${"op-amount op-" + (taken ? "withdrawal" : op.type)}>${op.type === "expense" || taken ? "−" : "+"}${money(op.amount, op.currency)}</span>
+            ${converted(op) && html`<span class="op-conv">≈ ${converted(op)}</span>`}
+          </span>
         </button>`;
         })}`;
     })}

@@ -404,6 +404,14 @@ pub struct TransactionOut {
     /// The other half of a transfer between savings accounts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pair_id: Option<i64>,
+    /// The rate on the operation's day into the budget's main currency (`rate_to`); left out
+    /// while it is being looked up, for the main currency itself, or when there is none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_day: Option<String>,
 }
 
 /// Money taken out of savings: a savings operation that counts negative.
@@ -412,7 +420,8 @@ pub const WITHDRAWAL: &str = "withdrawal";
 pub async fn category_transactions(db: &PgPool, kind: &str, ids: &[i64], month: &(String, String)) -> sqlx::Result<Vec<TransactionOut>> {
     let rows = sqlx::query(
         "SELECT t.id, t.amount, t.currency, t.note, t.is_debt, t.created_at, t.type, t.transaction_date, c.name,
-                COALESCE(u.first_name, u.username, u.telegram_id), t.source, t.pair_id
+                COALESCE(u.first_name, u.username, u.telegram_id), t.source, t.pair_id,
+                CASE WHEN t.rate_source NOT IN ('same', 'none') THEN t.rate END, t.rate_to, t.rate_day
          FROM transactions t
          LEFT JOIN categories c ON c.id = t.category_id
          LEFT JOIN users u ON u.id = t.user_id
@@ -438,6 +447,9 @@ pub async fn category_transactions(db: &PgPool, kind: &str, ids: &[i64], month: 
             actor_name: r.get(9),
             source: r.get(10),
             pair_id: r.get(11),
+            rate: r.get(12),
+            rate_to: r.get(13),
+            rate_day: r.get(14),
         })
         .collect())
 }
@@ -626,6 +638,12 @@ pub struct ReportTransaction {
     /// The other half of a transfer between savings accounts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pair_id: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_day: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -649,7 +667,8 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
     let rows = sqlx::query(
         "SELECT t.id, t.type, t.amount, t.currency, t.note, t.transaction_date,
                 r.id, r.name, r.emoji, r.color, CASE WHEN c.parent_id IS NULL THEN NULL ELSE c.name END,
-                COALESCE(u.first_name, u.username, u.telegram_id), t.source, t.pair_id
+                COALESCE(u.first_name, u.username, u.telegram_id), t.source, t.pair_id,
+                CASE WHEN t.rate_source NOT IN ('same', 'none') THEN t.rate END, t.rate_to, t.rate_day
          FROM transactions t
          JOIN categories c ON c.id = t.category_id
          JOIN categories r ON r.id = COALESCE(c.parent_id, c.id)
@@ -688,6 +707,9 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
             actor_name: r.get(11),
             source: r.get(12),
             pair_id: r.get(13),
+            rate: r.get(14),
+            rate_to: r.get(15),
+            rate_day: r.get(16),
         };
         let totals = match t.kind.as_str() {
             "income" => &mut report.income,

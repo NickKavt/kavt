@@ -96,6 +96,8 @@ export const createAccount = a => api("/api/savings/accounts", { method: "POST",
 export const updateAccount = (id, a) => api(`/api/savings/accounts/${id}`, { method: "PATCH", body: a });
 export const stopAccount = id => api(`/api/savings/accounts/${id}`, { method: "DELETE" });
 
+export const saveSettings = settings => api("/api/settings", { method: "PUT", body: settings });
+
 export const loadReport = (from, to) => api(`/api/report?from=${ymd(from)}&to=${ymd(to)}`);
 
 export const loadUsers = () => api("/api/users");

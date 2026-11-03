@@ -392,4 +392,13 @@ export default {
   "err.recurringNotFound": "Düzenli işlem bulunamadı",
   "err.unknownPeriod": "Bilinmeyen dönem",
   "err.tooManyRows": "Çok fazla satır; dosyayı bölün",
+  "rates.opRate": "{day} kuru: {rate} · ≈ {sum}",
+  "reports.inMain": "İşlem gününün kuruyla toplam {cur}",
+  "reports.inMainMissing": "{n} işlem hariç: kurları henüz bulunamadı",
+  "budgetRates.title": "Ana para birimi ve kur",
+  "budgetRates.hint": "Diğer para birimlerindeki işlemler kendi günlerinin kuruyla ana para birimine çevrilir ve bu kur saklanır.",
+  "budgetRates.main": "Ana para birimi",
+  "budgetRates.source": "Kur",
+  "budgetRates.off": "Çevirme",
+  "budgetRates.saved": "Kaydedildi. Kurlar yeniden hesaplanıyor",
 };

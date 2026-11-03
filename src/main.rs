@@ -331,6 +331,7 @@ async fn home(State(state): AppRef, headers: HeaderMap, Query(q): Query<MonthQue
         "chart": db::stats_by_category(&state.db, budget, &month).await?,
         "month_summary": db::month_summary(&state.db, budget, &month).await?,
         "savings_summary": db::savings_summary(&state.db, budget, &month.1).await?,
+        "settings": rates::settings(&state.db, budget).await?,
     })))
 }
 
@@ -701,6 +702,27 @@ async fn exchange_rates(State(state): AppRef, headers: HeaderMap, Query(q): Quer
     state.rates.get(source).await.map(Json).map_err(|_| ApiError::status(502, "Курсы сейчас недоступны"))
 }
 
+async fn get_settings(State(state): AppRef, headers: HeaderMap) -> ApiResult<Json<rates::Settings>> {
+    let me = user(&state, &headers).await?;
+    Ok(Json(rates::settings(&state.db, me.budget_owner_id).await?))
+}
+
+/// The main currency and where rates come from; for admins. Rates are looked up again.
+async fn put_settings(State(state): AppRef, headers: HeaderMap, Json(s): Json<rates::Settings>) -> ApiResult<Json<rates::Settings>> {
+    let me = admin(&state, &headers).await?;
+    let main = rates::symbol(&s.main_currency).to_string();
+    if !["₺", "$", "€", "₽"].contains(&main.as_str()) {
+        return Err(ApiError::status(400, "Неизвестная валюта"));
+    }
+    if s.rate_source != "off" && rates::source_name(&s.rate_source).is_none() {
+        return Err(ApiError::status(400, "Неизвестный источник курсов"));
+    }
+    let s = rates::Settings { main_currency: main, rate_source: s.rate_source };
+    rates::save_settings(&state.db, me.budget_owner_id, &s).await?;
+    lookup_rates(&state.db);
+    Ok(Json(s))
+}
+
 /// The subcategory stays with its operations; it just stops earning.
 async fn stop_account(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
     let me = user(&state, &headers).await?;
@@ -761,7 +783,18 @@ async fn insert_transaction(
     .bind(user_id).bind(category_id).bind(kind).bind(amount).bind(currency).bind(note).bind(is_debt as i64).bind(date)
     .fetch_one(db)
     .await?;
+    lookup_rates(db);
     Ok(Json(json!({ "id": id, "ok": true })))
+}
+
+/// Looks up the rates of new or changed operations in the background; the answer doesn't wait.
+fn lookup_rates(db: &PgPool) {
+    let db = db.clone();
+    tokio::spawn(async move {
+        if let Err(e) = rates::fill(&db, None).await {
+            tracing::warn!(error = %e, "rates of operations not filled");
+        }
+    });
 }
 
 /// An expense with a subcategory is booked on the subcategory itself.
@@ -828,6 +861,7 @@ async fn update_transaction(
     .await?;
     let Some((amount, currency, root)) = row else { return Err(ApiError::status(404, "Операция не найдена")) };
     check_amount(u.amount.unwrap_or(amount), u.currency.as_deref().unwrap_or(&currency))?;
+    let changes_rate = u.currency.is_some() || u.transaction_date.is_some();
     if let Some(target) = u.category_id {
         let fits: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM categories WHERE id = $1 AND budget_id = $2 AND (id = $3 OR parent_id = $3))")
             .bind(target).bind(me.budget_owner_id).bind(root)
@@ -860,6 +894,10 @@ async fn update_transaction(
     .bind(id)
     .execute(&state.db)
     .await?;
+    if changes_rate {
+        rates::forget(&state.db, id).await?;
+        lookup_rates(&state.db);
+    }
     Ok(ok())
 }
 
@@ -1167,6 +1205,11 @@ async fn worker(db: PgPool, every: Duration) {
             if let Err(e) = savings::sync_all(&db).await {
                 tracing::warn!(error = %e, "interest accrual failed");
             }
+            // Operations whose rate source didn't answer before, and those added by
+            // recurring payments, interest or an import.
+            if let Err(e) = rates::fill(&db, None).await {
+                tracing::warn!(error = %e, "rates of operations not filled");
+            }
         }
     }
 }
@@ -1199,6 +1242,7 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/savings/withdraw", post(withdraw))
         .route("/api/savings/transfer", post(transfer))
         .route("/api/recurring", post(recurring::create))
+        .route("/api/settings", axum::routing::put(put_settings))
         .route("/api/recurring/{recurring_id}", patch(recurring::update).delete(recurring::stop))
         .route_layer(from_fn_with_state(write_limit, limit::limit));
 
@@ -1242,6 +1286,7 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/savings-summary", get(savings_summary).route_layer(reads.clone()))
         .route("/api/savings/accounts", get(list_accounts).route_layer(reads.clone()).post(create_account))
         .route("/api/rates", get(exchange_rates).route_layer(reads.clone()))
+        .route("/api/settings", get(get_settings).route_layer(reads.clone()))
         .route("/api/recurring", get(recurring::list).route_layer(reads.clone()))
         .route("/api/export.csv", get(import::export).route_layer(reads))
         // A whole history is a few megabytes of JSON; one import at a time is plenty.

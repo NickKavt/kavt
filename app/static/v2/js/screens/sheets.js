@@ -91,6 +91,11 @@ function EditOperation({ op, categoryId }) {
       ${subs.length > 0 && !isInitial && html`<${Chips} items=${[[null, t("form.noSubcategory")], ...subs.map(x => [x.id, x.name])]} value=${sub} onChange=${setSub} />`}
       ${!isInitial && html`<input class="field" placeholder=${t("form.note")} value=${note} onInput=${e => setNote(e.currentTarget.value)} maxlength="200" />`}
       <${DateField} value=${date} onChange=${setDate} />
+      ${op.rate && op.rate_to && op.rate_to !== op.currency && date === op.transaction_date && currency === op.currency && html`<div class="muted small">${t("rates.opRate", {
+        day: dayTitle(parseYmd(op.rate_day || op.transaction_date)),
+        rate: `1 ${op.currency} = ${Number(op.rate).toLocaleString(locale(), { maximumFractionDigits: 4 })} ${op.rate_to}`,
+        sum: money(evalAmount(amount) * op.rate, op.rate_to),
+      })}</div>`}
       ${op.actor_name && html`<div class="muted small">${t("op.addedBy", { name: op.actor_name })}</div>`}
       <button type="button" class="btn btn-primary" onClick=${save}>${t("common.save")}</button>
       <button type="button" class="btn btn-danger" onClick=${remove}>${t("op.delete")}</button>
@@ -583,7 +588,31 @@ function device(ua = "") {
   return ua ? ua.slice(0, 40) : t("sessions.unknown");
 }
 
-const SHEETS = { quickAdd: QuickAdd, editOperation: EditOperation, subcategories: Subcategories, savingsGoal: SavingsGoal, savingsStart: SavingsStart, categoryEditor: CategoryEditor, users: Users, sessions: Sessions, donate: Donate, account: AccountEditor, transfer: Transfer, password: PasswordSheet, ...TOOL_SHEETS };
+/** The budget's main currency and the source of rates for operations in other currencies. */
+function BudgetRates() {
+  const current = useStore().home?.settings || { main_currency: "₺", rate_source: "tcmb" };
+  const [main, setMain] = useState(current.main_currency);
+  const [source, setSource] = useState(current.rate_source);
+  const save = async () => {
+    if (await attempt(() => data.saveSettings({ main_currency: main, rate_source: source }), t("budgetRates.saved"))) {
+      closeSheet();
+      data.refresh();
+    }
+  };
+  return html`<${Sheet} title=${t("budgetRates.title")}>
+    <div class="muted small">${t("budgetRates.hint")}</div>
+    <div class="form">
+      <div class="muted small">${t("budgetRates.main")}</div>
+      <${Seg} options=${CURRENCIES.map(c => [c, c])} value=${main} onChange=${setMain} />
+      <div class="muted small">${t("budgetRates.source")}</div>
+      <${Chips} items=${[["tcmb", t("rates.src.tcmb")], ["cbr", t("rates.src.cbr")], ["ecb", t("rates.src.ecb")], ["off", t("budgetRates.off")]]} value=${source} onChange=${setSource} />
+      ${source === "ecb" && html`<div class="muted small">${t("rates.ecbNoRub")}</div>`}
+      <button type="button" class="btn btn-primary" onClick=${save}>${t("common.save")}</button>
+    </div>
+  <//>`;
+}
+
+const SHEETS = { budgetRates: BudgetRates, quickAdd: QuickAdd, editOperation: EditOperation, subcategories: Subcategories, savingsGoal: SavingsGoal, savingsStart: SavingsStart, categoryEditor: CategoryEditor, users: Users, sessions: Sessions, donate: Donate, account: AccountEditor, transfer: Transfer, password: PasswordSheet, ...TOOL_SHEETS };
 
 export function SheetHost() {
   const sheet = useStore().sheet;

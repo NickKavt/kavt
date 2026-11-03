@@ -35,6 +35,9 @@ export function Manage() {
       ${isAdmin
         ? html`<${Row} icon="👥" title=${t("users.title")} onClick=${() => openSheet("users", {})} />`
         : html`<div class="row muted">${t("manage.membersOnlyAdmins")}</div>`}
+      ${isAdmin && html`<${Row} icon="💱" title=${t("budgetRates.title")}
+        subtitle=${s.home?.settings ? `${s.home.settings.main_currency} · ${s.home.settings.rate_source === "off" ? t("budgetRates.off") : t("rates.src." + s.home.settings.rate_source)}` : ""}
+        onClick=${() => openSheet("budgetRates", {})} />`}
     </div>
     <div class="section-title">${t("manage.data")}</div>
     <div class="group">

@@ -392,4 +392,13 @@ export default {
   "err.recurringNotFound": "Recurring operation not found",
   "err.unknownPeriod": "Unknown period",
   "err.tooManyRows": "Too many rows; split the file",
+  "rates.opRate": "Rate on {day}: {rate} · ≈ {sum}",
+  "reports.inMain": "Total in {cur} at each operation's day rate",
+  "reports.inMainMissing": "without {n} operations: their rate isn't found yet",
+  "budgetRates.title": "Main currency and rate",
+  "budgetRates.hint": "Operations in other currencies are converted into the main one at the rate of their own day, and that rate is kept.",
+  "budgetRates.main": "Main currency",
+  "budgetRates.source": "Rate",
+  "budgetRates.off": "Don't convert",
+  "budgetRates.saved": "Saved. Rates are being recalculated",
 };
