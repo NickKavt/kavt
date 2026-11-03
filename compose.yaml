@@ -1,0 +1,35 @@
+# Budget with its database. Start: `docker compose up -d` (settings in .env, see .env.example).
+services:
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: budget
+      POSTGRES_DB: budget
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      # Postgres 18 keeps its data in a version folder under this path.
+      - db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U budget -d budget"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    image: ${BUDGET_IMAGE:-ghcr.io/nickkavt/kavt:latest}
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://budget:${POSTGRES_PASSWORD}@db/budget
+    # Only this machine by default, for a reverse proxy or tunnel with HTTPS in front.
+    # BUDGET_BIND=0.0.0.0 opens it to the home network as http://<server>:8009.
+    ports:
+      - "${BUDGET_BIND:-127.0.0.1}:${BUDGET_PORT:-8009}:8009"
+
+volumes:
+  db:

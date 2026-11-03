@@ -1,0 +1,65 @@
+# Every push: build the image and start it with a database to see that it comes up healthy.
+# Pushes to main and version tags (v1.2.3) also publish it to ghcr.io for amd64 and arm64.
+name: docker
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Translations are complete
+        run: node tools/check-i18n.mjs
+      - name: Build and start with a database
+        run: |
+          printf 'POSTGRES_PASSWORD=ci%s\n' "$GITHUB_RUN_ID" > .env
+          BUDGET_IMAGE=budget:ci docker compose up -d --build --wait --wait-timeout 600
+          curl -fsS http://127.0.0.1:8009/health
+          curl -fsS http://127.0.0.1:8009/static/manifest.webmanifest | grep -q standalone
+          # A fresh install asks for its owner, then signs the owner in.
+          curl -fsS http://127.0.0.1:8009/api/setup | grep -q '"needs_setup":true'
+          curl -fsS -c jar -H 'Content-Type: application/json' -d '{"login":"ci-owner","password":"ci password"}' http://127.0.0.1:8009/api/setup
+          curl -fsS -b jar "http://127.0.0.1:8009/api/home?month=$(date +%Y-%m)-01" | grep -q categories
+      - name: Logs
+        if: always()
+        run: docker compose logs app
+
+  publish:
+    needs: smoke
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

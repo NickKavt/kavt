@@ -1,0 +1,31 @@
+[package]
+name = "budget-server"
+version = "1.0.0"
+edition = "2024"
+description = "Self-hosted family budget that runs as a Telegram Mini App"
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/NickKavt/kavt"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time"] }
+tower = "0.5"
+tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+chrono = { version = "0.4", features = ["serde"] }
+hmac = "0.13"
+sha2 = "0.11"
+hex = "0.4"
+rand = "0.10"
+serde_urlencoded = "0.7"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
+argon2 = "0.6"
+
+[profile.release]
+strip = true
+lto = "thin"
