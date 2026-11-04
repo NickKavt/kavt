@@ -412,6 +412,8 @@ pub struct TransactionOut {
     pub rate_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_day: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<i64>,
 }
 
 /// Money taken out of savings: a savings operation that counts negative.
@@ -421,7 +423,7 @@ pub async fn category_transactions(db: &PgPool, kind: &str, ids: &[i64], month: 
     let rows = sqlx::query(
         "SELECT t.id, t.amount, t.currency, t.note, t.is_debt, t.created_at, t.type, t.transaction_date, c.name,
                 COALESCE(u.first_name, u.username, u.telegram_id), t.source, t.pair_id,
-                CASE WHEN t.rate_source NOT IN ('same', 'none') THEN t.rate END, t.rate_to, t.rate_day
+                CASE WHEN t.rate_source NOT IN ('same', 'none') THEN t.rate END, t.rate_to, t.rate_day, t.account_id
          FROM transactions t
          LEFT JOIN categories c ON c.id = t.category_id
          LEFT JOIN users u ON u.id = t.user_id
@@ -450,6 +452,7 @@ pub async fn category_transactions(db: &PgPool, kind: &str, ids: &[i64], month: 
             rate: r.get(12),
             rate_to: r.get(13),
             rate_day: r.get(14),
+            account_id: r.get(15),
         })
         .collect())
 }
@@ -494,36 +497,24 @@ pub struct MonthSummary {
 pub async fn month_summary(db: &PgPool, budget: i64, month: &(String, String)) -> sqlx::Result<MonthSummary> {
     let income = month_sums(db, "income", budget, month).await?;
     let expense = month_sums(db, "expense", budget, month).await?;
-    // Savings move money out of the month, except the starting balance of the savings and
-    // interest paid on savings accounts, which were never part of any month's money.
-    // A withdrawal brings money back into the month.
-    let saved_rows = sqlx::query(
-        "SELECT t.currency, COALESCE(SUM(CASE WHEN t.source = 'withdrawal' THEN -t.amount ELSE t.amount END), 0.0) FROM transactions t JOIN categories c ON c.id = t.category_id
-         WHERE t.type = 'savings' AND COALESCE(t.note, '') NOT LIKE 'Первоначальная сумма%' AND (t.source IS NULL OR t.source = 'withdrawal')
-           AND t.transaction_date >= $1 AND t.transaction_date < $2 AND c.budget_id = $3
-         GROUP BY t.currency",
-    )
-    .bind(&month.0).bind(&month.1).bind(budget)
-    .fetch_all(db)
-    .await?;
-    let saved: Totals = saved_rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+    // Money put aside into savings accounts leaves the month; what comes back returns to it.
+    let saved = crate::accounts::saved(db, budget, Some(&month.0), &month.1).await?;
     let carry_rows = sqlx::query(
-        "SELECT t.currency, COALESCE(SUM(CASE
-                WHEN t.type = 'income' THEN t.amount
-                WHEN t.type = 'expense' THEN -t.amount
-                WHEN t.type = 'savings' AND t.source = 'withdrawal' THEN t.amount
-                WHEN t.type = 'savings' AND COALESCE(t.note, '') NOT LIKE 'Первоначальная сумма%' AND t.source IS NULL THEN -t.amount
-                ELSE 0 END), 0.0)
+        "SELECT t.currency, COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount WHEN t.type = 'expense' THEN -t.amount ELSE 0 END), 0.0)
          FROM transactions t JOIN categories c ON c.id = t.category_id
-         WHERE t.type IN ('income', 'expense', 'savings') AND t.transaction_date < $1 AND c.budget_id = $2
+         WHERE t.type IN ('income', 'expense') AND t.transaction_date < $1 AND c.budget_id = $2
          GROUP BY t.currency",
     )
     .bind(&month.0).bind(budget)
     .fetch_all(db)
     .await?;
+    let saved_before = crate::accounts::saved(db, budget, None, &month.0).await?;
     let mut carry_in = zero_filled();
     for r in carry_rows {
         carry_in.insert(r.get(0), r.get(1));
+    }
+    for (c, v) in &saved_before {
+        *carry_in.entry(c.clone()).or_default() -= v;
     }
     let balance = DEFAULT_CURRENCIES
         .iter()
@@ -537,66 +528,35 @@ pub async fn month_summary(db: &PgPool, budget: i64, month: &(String, String)) -
 
 #[derive(Debug, Serialize)]
 pub struct SavingsSummary {
-    pub category_id: i64,
-    pub name: String,
+    /// The budget's main currency: the goal and `saved_amount` are in it.
     pub currency: String,
     pub target_amount: f64,
     pub saved_amount: f64,
     pub remaining_amount: f64,
     pub progress_percent: f64,
-    /// The starting balance («Первоначальная сумма…»), whatever month it is dated in.
-    pub initial: Option<SavingsInitial>,
+    /// All savings accounts' money by currency, up to the end of the month on screen.
+    pub saved_by_currency: Totals,
 }
 
-#[derive(Debug, Serialize)]
-pub struct SavingsInitial {
-    pub id: i64,
-    pub amount: f64,
-    pub currency: String,
-    pub transaction_date: String,
-}
-
-/// Savings saved up to `until` (exclusive, `YYYY-MM-DD`): the end of the month on screen.
+/// Savings up to `until` (exclusive, `YYYY-MM-DD`): the end of the month on screen. The goal
+/// counts savings in the main currency.
 pub async fn savings_summary(db: &PgPool, budget: i64, until: &str) -> sqlx::Result<Option<SavingsSummary>> {
-    let id = ensure_system_root(db, budget, "savings").await?;
-    let row = sqlx::query("SELECT id, name, emoji, color, type, target_amount FROM categories WHERE id = $1")
-        .bind(id)
+    let by_currency = crate::accounts::savings_totals(db, budget, until).await?;
+    let settings: Option<(String, Option<f64>)> = sqlx::query_as("SELECT main_currency, savings_goal FROM budget_settings WHERE budget_id = $1")
+        .bind(budget)
         .fetch_optional(db)
         .await?;
-    let Some(cat) = row.as_ref().map(category_from_row) else { return Ok(None) };
-    let mut ids = vec![cat.id];
-    ids.extend(child_ids(db, cat.id).await?);
-    let rows = sqlx::query(
-        "SELECT currency, COALESCE(SUM(CASE WHEN source = 'withdrawal' THEN -amount ELSE amount END), 0.0) FROM transactions
-         WHERE type = 'savings' AND category_id = ANY($1) AND transaction_date < $2
-         GROUP BY currency",
-    )
-    .bind(&ids).bind(until)
-    .fetch_all(db)
-    .await?;
-    let by_currency: Totals = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
-    let (currency, saved) = by_currency.iter().next().map(|(c, v)| (c.clone(), *v)).unwrap_or(("₽".to_string(), 0.0));
-    let target = cat.target_amount.unwrap_or(0.0);
-    let remaining = (target - saved).max(0.0);
+    let (currency, goal) = settings.unwrap_or_else(|| ("₺".into(), None));
+    let saved = by_currency.get(&currency).copied().unwrap_or(0.0);
+    let target = goal.unwrap_or(0.0);
     let progress = if target > 0.0 { ((saved / target * 100.0) * 10.0).round() / 10.0 } else { 0.0 };
-    let initial = sqlx::query(
-        "SELECT id, amount, currency, transaction_date FROM transactions
-         WHERE type = 'savings' AND category_id = ANY($1) AND COALESCE(note, '') LIKE 'Первоначальная сумма%'
-         ORDER BY transaction_date ASC, id ASC LIMIT 1",
-    )
-    .bind(&ids)
-    .fetch_optional(db)
-    .await?
-    .map(|r| SavingsInitial { id: r.get(0), amount: r.get(1), currency: r.get(2), transaction_date: r.get(3) });
     Ok(Some(SavingsSummary {
-        category_id: cat.id,
-        name: cat.name,
         currency,
         target_amount: target,
         saved_amount: saved,
-        remaining_amount: remaining,
-        progress_percent: progress.min(100.0),
-        initial,
+        remaining_amount: (target - saved).max(0.0),
+        progress_percent: progress.clamp(0.0, 100.0),
+        saved_by_currency: by_currency,
     }))
 }
 
@@ -644,6 +604,8 @@ pub struct ReportTransaction {
     pub rate_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rate_day: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -668,7 +630,7 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
         "SELECT t.id, t.type, t.amount, t.currency, t.note, t.transaction_date,
                 r.id, r.name, r.emoji, r.color, CASE WHEN c.parent_id IS NULL THEN NULL ELSE c.name END,
                 COALESCE(u.first_name, u.username, u.telegram_id), t.source, t.pair_id,
-                CASE WHEN t.rate_source NOT IN ('same', 'none') THEN t.rate END, t.rate_to, t.rate_day
+                CASE WHEN t.rate_source NOT IN ('same', 'none') THEN t.rate END, t.rate_to, t.rate_day, t.account_id
          FROM transactions t
          JOIN categories c ON c.id = t.category_id
          JOIN categories r ON r.id = COALESCE(c.parent_id, c.id)
@@ -710,6 +672,7 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
             rate: r.get(14),
             rate_to: r.get(15),
             rate_day: r.get(16),
+            account_id: r.get(17),
         };
         let totals = match t.kind.as_str() {
             "income" => &mut report.income,
@@ -733,6 +696,7 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
         }
         report.transactions.push(t);
     }
+    report.savings = crate::accounts::saved(db, budget, Some(&from.to_string()), &end).await?;
     report.categories = categories.into_values().collect();
     report.categories.sort_by(|a, b| b.totals.values().sum::<f64>().total_cmp(&a.totals.values().sum::<f64>()));
     report.days = days.into_iter().map(|(date, expense)| ReportDay { date, expense }).collect();

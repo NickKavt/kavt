@@ -3,14 +3,15 @@
 
 import { html, useEffect, useState } from "../../vendor/preact-htm.js";
 import { t, errorText, locale } from "../i18n.js";
-import { money, ymd, today, CURRENCIES, dayTitle, parseYmd } from "../format.js";
-import { state, useStore, closeSheet, toast, update } from "../store.js";
+import { money, ymd, today, dayTitle, parseYmd, myCurrencies, allCurrencies, currencyName, currencySymbol, codeOf } from "../format.js";
+import { state, useStore, closeSheet, toast, update, openSheet } from "../store.js";
 import * as data from "../data.js";
 import { evalAmount } from "../calc.js";
 import { haptic, ask, tell, openLink, openTelegramLink } from "../tg.js";
-import { Sheet, Seg, Chips, MoneyField, DateField, Row, Empty, lastCurrency } from "../ui.js";
+import { Sheet, Seg, Chips, MoneyField, DateField, Row, Empty, lastCurrency, CurrencySelect, ListSelect, sourceItems } from "../ui.js";
 import { AddForm, INITIAL_NOTE, pct } from "./category.js";
 import { TOOL_SHEETS } from "./tools.js";
+import { ACCOUNT_SHEETS, AccountPicker, activeAccounts } from "./accounts.js";
 
 async function attempt(fn, done) {
   try {
@@ -48,11 +49,13 @@ function QuickAdd() {
       localStorage.setItem("budget:v2:quickCat", id);
     } catch {}
   };
+  // Savings are accounts now: putting money aside is a transfer into one.
+  const pickKind = k => (k === "savings" ? openSheet("moneyTransfer", { toSavings: true }) : setKind(k));
   return html`<${Sheet} title=${t("quick.title")}>
-    <${Seg} options=${[["expense", t("kind.expense")], ["income", t("quick.income")], ["savings", t("kind.savings")]]} value=${kind} onChange=${setKind} />
+    <${Seg} options=${[["expense", t("kind.expense")], ["income", t("quick.income")], ["savings", t("kind.savings")]]} value=${kind} onChange=${pickKind} />
     ${kind === "expense" && html`<${Chips} items=${expenses.map(c => [c.id, `${c.emoji} ${c.name}`])} value=${catId} onChange=${pick} />`}
     ${category
-      ? html`<${AddForm} key=${category.id} category=${category} details=${s.details[category.id]} autofocus onSaved=${closeSheet} />`
+      ? html`<${AddForm} key=${kind} category=${category} details=${s.details[category.id]} autofocus onSaved=${closeSheet} />`
       : html`<${Empty}>${t("quick.noCategory")}<//>`}
   <//>`;
 }
@@ -67,12 +70,27 @@ function EditOperation({ op, categoryId }) {
   const [date, setDate] = useState(op.transaction_date);
   const currentSub = subs.find(x => x.name === op.subcategory_name)?.id ?? null;
   const [sub, setSub] = useState(currentSub);
+  const accounts = activeAccounts(useStore());
+  const [account, setAccount] = useState(op.account_id ?? null);
+  // An operation that moves money is on an account; its currency is the account's.
+  const onAccount = op.account_id != null;
+  const pickAccount = id => {
+    setAccount(id);
+    const a = accounts.find(x => x.id === id);
+    if (a) setCurrency(a.currency);
+  };
+  const pickCurrency = c => {
+    setCurrency(c);
+    const a = accounts.find(x => x.id === account);
+    if (onAccount && a?.currency !== c) setAccount(accounts.find(x => x.currency === c)?.id ?? null);
+  };
   const save = async () => {
     const value = evalAmount(amount);
     if (!(value > 0)) return tell(t("form.enterAmount"));
     const patch = { amount: value, currency, transaction_date: date };
     if (!isInitial) patch.note = note.trim();
     if (sub !== currentSub) patch.category_id = sub ?? categoryId;
+    if (onAccount && account != null && account !== op.account_id) patch.account_id = account;
     if (await attempt(() => data.updateOperation(op.id, patch), t("op.saved"))) {
       closeSheet();
       data.refresh();
@@ -87,7 +105,8 @@ function EditOperation({ op, categoryId }) {
   };
   return html`<${Sheet} title=${isInitial ? t("savings.start") : t("op.title")}>
     <div class="form">
-      <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${setCurrency} onEnter=${save} />
+      <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${pickCurrency} onEnter=${save} />
+      ${onAccount && html`<${AccountPicker} accounts=${accounts} value=${account} onChange=${pickAccount} />`}
       ${subs.length > 0 && !isInitial && html`<${Chips} items=${[[null, t("form.noSubcategory")], ...subs.map(x => [x.id, x.name])]} value=${sub} onChange=${setSub} />`}
       ${!isInitial && html`<input class="field" placeholder=${t("form.note")} value=${note} onInput=${e => setNote(e.currentTarget.value)} maxlength="200" />`}
       <${DateField} value=${date} onChange=${setDate} />
@@ -103,7 +122,8 @@ function EditOperation({ op, categoryId }) {
   <//>`;
 }
 
-function Subcategories({ categoryId }) {
+/** Subcategories of a category: rename, delete, add. Shown in the category editor (Manage). */
+function SubcategoryList({ categoryId }) {
   const details = useStore().details[categoryId];
   const [name, setName] = useState("");
   const [editing, setEditing] = useState(null);
@@ -128,7 +148,7 @@ function Subcategories({ categoryId }) {
     if (await attempt(() => data.deleteSubcategory(sub.id), t("sub.deleted"))) reload();
   };
   const subs = details?.subcategories || [];
-  return html`<${Sheet} title=${t("sub.title")}>
+  return html`<div class="form sub-list">
     ${subs.length > 0 && html`<div class="muted small">${t("sub.hint")}</div>`}
     ${subs.length > 0 && html`<div class="group">
       ${subs.map(sub => editing === sub.id
@@ -147,70 +167,7 @@ function Subcategories({ categoryId }) {
       <input class="field" placeholder=${t("sub.newName")} value=${name} onInput=${e => setName(e.currentTarget.value)} onKeyDown=${e => e.key === "Enter" && add()} maxlength="60" />
       <button type="button" class="btn btn-primary btn-small" onClick=${add}>${t("common.add")}</button>
     </div>
-  <//>`;
-}
-
-function savingsCategory() {
-  return state.home?.categories.find(c => c.type === "savings");
-}
-
-function SavingsGoal() {
-  const summary = state.home?.savings_summary;
-  const cat = savingsCategory();
-  const [amount, setAmount] = useState(summary?.target_amount ? String(summary.target_amount) : "");
-  const save = async (value) => {
-    const ok = await attempt(() => data.updateCategory(cat.id, { name: cat.name, emoji: cat.emoji, color: cat.color, target_amount: value }), t("savings.goalSaved"));
-    if (ok) {
-      closeSheet();
-      data.refresh();
-    }
-  };
-  return html`<${Sheet} title=${t("savings.goal")}>
-    <div class="form">
-      <${MoneyField} value=${amount} onInput=${setAmount} currency=${summary?.currency || "₺"} onCurrency=${() => {}} autofocus />
-      <button type="button" class="btn btn-primary" onClick=${() => { const v = evalAmount(amount); v > 0 ? save(v) : tell(t("form.enterAmount")); }}>${t("common.save")}</button>
-      ${summary?.target_amount > 0 && html`<button type="button" class="btn" onClick=${() => save(null)}>${t("savings.removeGoal")}</button>`}
-    </div>
-  <//>`;
-}
-
-function SavingsStart() {
-  const summary = state.home?.savings_summary;
-  const initial = summary?.initial;
-  const [amount, setAmount] = useState(initial ? String(initial.amount).replace(".", ",") : "");
-  const [currency, setCurrency] = useState(initial?.currency || summary?.currency || "₺");
-  // Older starting balances were stored on 2000-01-01; offer today for those.
-  const [date, setDate] = useState(initial && initial.transaction_date > "2000-01-01" ? initial.transaction_date : ymd(today()));
-  const save = async () => {
-    const value = evalAmount(amount);
-    if (!(value > 0)) return tell(t("form.enterAmount"));
-    // One starting balance: an existing one is changed, never added a second time.
-    const ok = await attempt(
-      () => initial
-        ? data.updateOperation(initial.id, { amount: value, currency, transaction_date: date })
-        : data.addOperation({ category: savingsCategory(), amount: value, currency, note: INITIAL_NOTE, date }),
-      t("savings.startSaved"));
-    if (ok) {
-      closeSheet();
-      data.refresh();
-    }
-  };
-  const remove = async () => {
-    if (!(await ask(t("savings.confirmRemoveStart")))) return;
-    if (await attempt(() => data.deleteOperation(initial.id), t("op.deleted"))) {
-      closeSheet();
-      data.refresh();
-    }
-  };
-  return html`<${Sheet} title=${t("savings.start")}>
-    <div class="muted small">${t("savings.startHint")}</div>
-    <div class="form">
-      <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${setCurrency} autofocus onEnter=${save} />
-      <${DateField} value=${date} onChange=${setDate} />
-      <button type="button" class="btn btn-primary" onClick=${save}>${t("common.save")}</button>
-      ${initial && html`<button type="button" class="btn btn-danger" onClick=${remove}>${t("savings.removeStart")}</button>`}
-    </div>
-  <//>`;
+  </div>`;
 }
 
 /** The last emoji typed, whole: skin tones, flags and joined emoji like 👨‍👩‍👧 stay one icon. Letters are ignored. */
@@ -224,6 +181,10 @@ const COLORS = ["#e0af68", "#9ece6a", "#73daca", "#2ac3de", "#6183bb", "#7aa2f7"
 
 function CategoryEditor({ id }) {
   const existing = id ? state.home?.categories.find(c => c.id === id) : null;
+  // Its subcategories are edited here, in Manage only.
+  useEffect(() => {
+    if (existing && !state.details[id]) data.loadDetails(id).catch(() => {});
+  }, [id]);
   const [name, setName] = useState(existing?.name || "");
   const [emoji, setEmoji] = useState(existing?.emoji || "🛒");
   const [color, setColor] = useState(existing?.color || COLORS[0]);
@@ -263,8 +224,10 @@ function CategoryEditor({ id }) {
           style=${`background:${c}`} onClick=${() => setColor(c)} aria-label=${c}></button>`)}
       </div>
       <button type="button" class="btn btn-primary" onClick=${save}>${existing ? t("common.save") : t("catEdit.create")}</button>
-      ${existing?.type === "expense" && html`<button type="button" class="btn btn-danger" onClick=${remove}>${t("catEdit.delete")}</button>`}
     </div>
+    ${existing && html`<div class="section-title">${t("sub.title")}</div>
+      <${SubcategoryList} categoryId=${id} />`}
+    ${existing?.type === "expense" && html`<div class="form"><button type="button" class="btn btn-danger" onClick=${remove}>${t("catEdit.delete")}</button></div>`}
   <//>`;
 }
 
@@ -468,116 +431,6 @@ function decimal(text) {
 
 const TERMS = [32, 92, 181, 365];
 
-/** Money from one savings account to another; `places` are the savings and its accounts. */
-function Transfer({ places }) {
-  const [from, setFrom] = useState(places[1]?.id ?? places[0].id);
-  const [to, setTo] = useState(places[0].id === from ? places[1]?.id : places[0].id);
-  const [amount, setAmount] = useState("");
-  const [currency, setCurrency] = useState(lastCurrency());
-  const [note, setNote] = useState("");
-  const [date, setDate] = useState(ymd(new Date()));
-  const items = places.map(p => [p.id, p.name]);
-  const pickFrom = id => {
-    setFrom(id);
-    if (id === to) setTo(places.find(p => p.id !== id)?.id);
-  };
-  const save = async () => {
-    const value = evalAmount(amount);
-    if (!(value > 0)) return tell(t("form.enterAmount"));
-    if (from === to) return tell(t("transfer.same"));
-    const ok = await attempt(() => data.transfer({ fromId: from, toId: to, amount: value, currency, note: note.trim(), date }), t("transfer.done"));
-    if (ok) {
-      closeSheet();
-      data.refresh();
-    }
-  };
-  return html`<${Sheet} title=${t("transfer.title")}>
-    <div class="form">
-      <div class="muted small">${t("transfer.from")}</div>
-      <${Chips} items=${items} value=${from} onChange=${pickFrom} />
-      <div class="muted small">${t("transfer.to")}</div>
-      <${Chips} items=${items.filter(([id]) => id !== from)} value=${to} onChange=${setTo} />
-      <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${setCurrency} onEnter=${save} />
-      <input class="field" placeholder=${t("form.note")} value=${note} onInput=${e => setNote(e.currentTarget.value)} maxlength="200" />
-      <${DateField} value=${date} onChange=${setDate} />
-      <div class="muted small">${t("transfer.hint")}</div>
-      <button type="button" class="btn btn-primary" onClick=${save}>${t("transfer.button")}</button>
-    </div>
-  <//>`;
-}
-
-/** A new savings account with interest, or the settings of one. */
-function AccountEditor({ account }) {
-  const editing = !!account;
-  const [name, setName] = useState(account?.name || "");
-  const [kind, setKind] = useState(account?.kind || "flexible");
-  const [currency, setCurrency] = useState(account?.currency || lastCurrency());
-  const [rate, setRate] = useState(account ? pct(account.rate) : "");
-  const [tax, setTax] = useState(account?.tax ? pct(account.tax) : "");
-  const [days, setDays] = useState(String(account?.term_days || 32));
-  const [start, setStart] = useState(account?.start || ymd(new Date()));
-  const [rateFrom, setRateFrom] = useState(ymd(new Date()));
-  const taxValue = tax.trim() ? decimal(tax) : 0;
-  const rateChanged = editing && (decimal(rate) !== account.rate || taxValue !== account.tax);
-
-  const save = async () => {
-    if (!name.trim()) return tell(t("err.emptyName"));
-    const r = decimal(rate);
-    if (!(r >= 0)) return tell(t("acc.enterRate"));
-    if (!(taxValue >= 0 && taxValue < 100)) return tell(t("acc.enterTax"));
-    const termDays = Math.round(decimal(days));
-    if (kind === "term" && !(termDays >= 1)) return tell(t("acc.enterDays"));
-    const body = { name: name.trim(), kind, currency, rate: r, tax: taxValue, term_days: kind === "term" ? termDays : null, start, rate_from: rateChanged ? rateFrom : null };
-    const ok = await attempt(() => (editing ? data.updateAccount(account.id, body) : data.createAccount(body)), (editing ? t("acc.saved") : t("acc.created")));
-    if (ok) {
-      closeSheet();
-      data.refresh();
-    }
-  };
-  const stop = async () => {
-    if (!(await ask(t("acc.confirmStop", { name: account.name })))) return;
-    if (await attempt(() => data.stopAccount(account.id), t("acc.stopped"))) {
-      closeSheet();
-      data.refresh();
-    }
-  };
-
-  return html`<${Sheet} title=${editing ? account.name : t("acc.new")}>
-    <div class="form">
-      <input class="field" value=${name} onInput=${e => setName(e.currentTarget.value)} placeholder=${t("acc.namePlaceholder")} maxlength="60" />
-      <${Seg} options=${[["flexible", t("acc.flexible")], ["term", t("acc.term")]]} value=${kind} onChange=${setKind} />
-      <div class="muted small">${kind === "term" ? t("acc.termHint") : t("acc.flexibleHint")}</div>
-      <div class="acc-fields">
-        <label class="acc-field">
-          <span class="muted">${t("acc.rate")}</span>
-          <span class="acc-input"><input class="field" inputmode="decimal" value=${rate} onInput=${e => setRate(e.currentTarget.value)} placeholder="45" /><span>%</span></span>
-        </label>
-        <label class="acc-field">
-          <span class="muted">${t("acc.tax")}</span>
-          <span class="acc-input"><input class="field" inputmode="decimal" value=${tax} onInput=${e => setTax(e.currentTarget.value)} placeholder="0" /><span>%</span></span>
-        </label>
-      </div>
-      ${kind === "term" && html`<label class="acc-field">
-        <span class="muted">${t("acc.days")}</span>
-        <input class="field" inputmode="numeric" value=${days} onInput=${e => setDays(e.currentTarget.value)} />
-      </label>
-      <${Chips} items=${TERMS.map(n => [String(n), t("acc.daysShort", { n })])} value=${days} onChange=${setDays} />`}
-      <${Chips} items=${CURRENCIES.map(c => [c, c])} value=${currency} onChange=${setCurrency} />
-      <label class="date-row">
-        <span class="date-label">${t("acc.start")}</span>
-        <input type="date" class="field date-input" value=${start} max=${ymd(new Date())} onChange=${e => e.currentTarget.value && setStart(e.currentTarget.value)} />
-      </label>
-      ${rateChanged && html`<label class="date-row">
-        <span class="date-label">${t("acc.rateFrom")}</span>
-        <input type="date" class="field date-input" value=${rateFrom} min=${start} max=${ymd(new Date())} onChange=${e => e.currentTarget.value && setRateFrom(e.currentTarget.value)} />
-      </label>`}
-      <div class="muted small">${t("acc.depositHint")} ${t("acc.fixHint")}</div>
-      <button type="button" class="btn btn-primary" onClick=${save}>${editing ? t("common.save") : t("catEdit.create")}</button>
-      ${editing && html`<button type="button" class="btn btn-danger" onClick=${stop}>${t("acc.stop")}</button>`}
-    </div>
-  <//>`;
-}
-
 /** A readable device name from the browser's description. */
 function device(ua = "") {
   if (/iPhone|iPad/.test(ua)) return "iPhone / iPad";
@@ -603,16 +456,53 @@ function BudgetRates() {
     <div class="muted small">${t("budgetRates.hint")}</div>
     <div class="form">
       <div class="muted small">${t("budgetRates.main")}</div>
-      <${Seg} options=${CURRENCIES.map(c => [c, c])} value=${main} onChange=${setMain} />
-      <div class="muted small">${t("budgetRates.source")}</div>
-      <${Chips} items=${[["tcmb", t("rates.src.tcmb")], ["cbr", t("rates.src.cbr")], ["ecb", t("rates.src.ecb")], ["off", t("budgetRates.off")]]} value=${source} onChange=${setSource} />
+      <${CurrencySelect} value=${main} onChange=${setMain} />
+      <${ListSelect} items=${sourceItems(["tcmb", "cbr", "ecb", "fawaz", "off"])} value=${source} onChange=${setSource} label=${t("budgetRates.source")} />
       ${source === "ecb" && html`<div class="muted small">${t("rates.ecbNoRub")}</div>`}
+      <div class="muted small">${t("budgetRates.fallback")}</div>
       <button type="button" class="btn btn-primary" onClick=${save}>${t("common.save")}</button>
     </div>
   <//>`;
 }
 
-const SHEETS = { budgetRates: BudgetRates, quickAdd: QuickAdd, editOperation: EditOperation, subcategories: Subcategories, savingsGoal: SavingsGoal, savingsStart: SavingsStart, categoryEditor: CategoryEditor, users: Users, sessions: Sessions, donate: Donate, account: AccountEditor, transfer: Transfer, password: PasswordSheet, ...TOOL_SHEETS };
+/** This person's own list of currencies offered in forms; the rest stay one tap away. */
+function MyCurrencies() {
+  const s = useStore();
+  const [list, setList] = useState(myCurrencies(s));
+  const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+  const fits = id => !needle || codeOf(id).toLowerCase().includes(needle) || id.toLowerCase().includes(needle) || currencyName(id).toLowerCase().includes(needle);
+  const toggle = id => setList(list.includes(id) ? list.filter(x => x !== id) : [...list, id]);
+  const save = async currencies => {
+    try {
+      await data.savePrefs({ currencies });
+      update({ me: { ...s.me, currencies } });
+      toast(t("common.saved"));
+      closeSheet();
+    } catch (e) {
+      toast(errorText(e), "error");
+    }
+  };
+  const row = id => html`<button type="button" key=${id} class=${"picker-row" + (list.includes(id) ? " active" : "")} onClick=${() => toggle(id)}>
+    <span class=${"pr-icon" + (currencySymbol(id).length > 2 ? " pr-code" : "")}>${currencySymbol(id)}</span>
+    <span class="pr-text"><span class="pr-name">${currencyName(id)}</span><span class="muted small">${codeOf(id)}</span></span>
+    <span class="pr-check">${list.includes(id) ? "✓" : ""}</span>
+  </button>`;
+  return html`<${Sheet} title=${t("currency.myTitle")} tall>
+    <div class="muted small">${t("currency.myHint")}</div>
+    <input class="field" placeholder=${t("currency.search")} value=${q} onInput=${e => setQ(e.currentTarget.value)} autocomplete="off" />
+    <div class="picker-list my-currencies">
+      ${list.filter(fits).map(row)}
+      ${allCurrencies().filter(id => !list.includes(id)).filter(fits).slice(0, 200).map(row)}
+    </div>
+    <div class="form">
+      <button type="button" class="btn btn-primary" onClick=${() => (list.length ? save(list) : tell(t("currency.pickOne")))}>${t("common.save")}</button>
+      ${s.me?.currencies && html`<button type="button" class="btn" onClick=${() => save(null)}>${t("currency.reset")}</button>`}
+    </div>
+  <//>`;
+}
+
+const SHEETS = { myCurrencies: MyCurrencies, budgetRates: BudgetRates, quickAdd: QuickAdd, editOperation: EditOperation, categoryEditor: CategoryEditor, users: Users, sessions: Sessions, donate: Donate, password: PasswordSheet, ...TOOL_SHEETS, ...ACCOUNT_SHEETS };
 
 export function SheetHost() {
   const sheet = useStore().sheet;

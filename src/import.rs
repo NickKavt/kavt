@@ -41,10 +41,21 @@ pub async fn export(State(state): AppRef, headers: HeaderMap) -> ApiResult<Respo
     let me = user(&state, &headers).await?;
     let rows = sqlx::query(
         "SELECT t.transaction_date, t.type, t.source, COALESCE(p.name, c.name), CASE WHEN p.id IS NULL THEN '' ELSE c.name END,
-                t.amount, t.currency, COALESCE(t.note, ''), COALESCE(u.first_name, u.login, u.username, '')
+                t.amount, t.currency, COALESCE(t.note, ''), COALESCE(u.first_name, u.login, u.username, ''), t.id
          FROM transactions t JOIN categories c ON c.id = t.category_id LEFT JOIN categories p ON p.id = c.parent_id
          LEFT JOIN users u ON u.id = t.user_id
-         WHERE c.budget_id = $1 ORDER BY t.transaction_date, t.id",
+         WHERE c.budget_id = $1
+         UNION ALL
+         -- Money put into or taken out of a savings account, from the everyday account's side.
+         SELECT t.transaction_date, 'savings', CASE WHEN t.source = 'transfer_in' THEN 'withdrawal' END, 'Сбережения', sa.name,
+                t.amount, t.currency, COALESCE(t.note, ''), COALESCE(u.first_name, u.login, u.username, ''), t.id
+         FROM transactions t
+         JOIN accounts a ON a.id = t.account_id AND a.kind = 'regular'
+         JOIN transactions o ON o.id = t.pair_id
+         JOIN accounts sa ON sa.id = o.account_id AND sa.kind = 'savings'
+         LEFT JOIN users u ON u.id = t.user_id
+         WHERE t.type = 'transfer' AND a.budget_id = $1
+         ORDER BY 1, 10",
     )
     .bind(me.budget_owner_id)
     .fetch_all(&state.db)
@@ -120,7 +131,7 @@ fn currency(raw: &str) -> String {
         "USD" | "$" => "$".into(),
         "EUR" | "€" => "€".into(),
         "RUB" | "RUR" | "₽" | "РУБ" => "₽".into(),
-        _ => c.into(),
+        _ => crate::rates::symbol(c),
     }
 }
 
@@ -256,7 +267,8 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
         if kind != "expense" && subcategory.is_empty() && category.to_lowercase() != root_name.to_lowercase() {
             subcategory = category.clone();
         }
-        let target = if subcategory.is_empty() {
+        // Savings rows go to savings accounts below, not to a savings subcategory.
+        let target = if subcategory.is_empty() || kind == "savings" {
             root
         } else {
             cats.sub(kind, root, &root_name, &subcategory, &db::month_bounds(r.date).0).await?
@@ -265,6 +277,46 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
         let n = seen.entry(base.clone()).or_default();
         *n += 1;
         let key = hex::encode(Sha256::digest(format!("{base}\u{1f}{n}").as_bytes()));
+        if kind == "savings" {
+            // Savings are accounts: the file's subcategory (or its category, unless that is
+            // «Сбережения» itself) names the savings account.
+            let name = if !subcategory.is_empty() { subcategory.clone() } else if !category.is_empty() && category.to_lowercase() != root_name.to_lowercase() { category.clone() } else { root_name.clone() };
+            let savings = savings_account(&mut cats, &name, &cur).await?;
+            let fresh = if r.kind == "interest" {
+                let pct = crate::savings::interest_category(cats.tx, budget).await?;
+                sqlx::query(
+                    "INSERT INTO transactions (user_id, category_id, account_id, type, amount, currency, note, transaction_date, source, import_key)
+                     VALUES ($1, $2, $3, 'income', $4, $5, NULLIF($6, ''), $7, 'interest_fixed', $8) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING",
+                )
+                .bind(me.id).bind(pct).bind(savings).bind(amount).bind(&cur).bind(&note).bind(&date).bind(&key)
+                .execute(&mut **cats.tx)
+                .await?
+                .rows_affected() == 1
+            } else {
+                let regular = regular_account(&mut cats, me.id, &cur).await?;
+                let (from, to) = if source == Some("withdrawal") { (savings, regular) } else { (regular, savings) };
+                let out: Option<i64> = sqlx::query_scalar(
+                    "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source, import_key)
+                     VALUES ($1, $2, 'transfer', $3, $4, NULLIF($5, ''), $6, 'transfer_out', $7) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING RETURNING id",
+                )
+                .bind(me.id).bind(from).bind(amount).bind(&cur).bind(&note).bind(&date).bind(&key)
+                .fetch_optional(&mut **cats.tx)
+                .await?;
+                if let Some(out) = out {
+                    let into: i64 = sqlx::query_scalar(
+                        "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source, pair_id)
+                         VALUES ($1, $2, 'transfer', $3, $4, NULLIF($5, ''), $6, 'transfer_in', $7) RETURNING id",
+                    )
+                    .bind(me.id).bind(to).bind(amount).bind(&cur).bind(&note).bind(&date).bind(out)
+                    .fetch_one(&mut **cats.tx)
+                    .await?;
+                    sqlx::query("UPDATE transactions SET pair_id = $2 WHERE id = $1").bind(out).bind(into).execute(&mut **cats.tx).await?;
+                }
+                out.is_some()
+            };
+            if fresh { added += 1 } else { skipped += 1 }
+            continue;
+        }
         let done = sqlx::query(
             "INSERT INTO transactions (user_id, category_id, type, amount, currency, note, transaction_date, source, import_key)
              VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING",
@@ -316,4 +368,46 @@ mod tests {
         assert_eq!(currency("TRY"), "₺");
         assert_eq!(currency("GBP"), "GBP");
     }
+}
+
+/// The savings account of that name and currency, made when the file is the first to name it.
+async fn savings_account(cats: &mut Categories<'_>, name: &str, currency: &str) -> sqlx::Result<i64> {
+    let found: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM accounts WHERE budget_id = $1 AND kind = 'savings' AND currency = $2 AND lower(name) = lower($3)
+         ORDER BY archived, id LIMIT 1",
+    )
+    .bind(cats.budget).bind(currency).bind(name)
+    .fetch_optional(&mut **cats.tx)
+    .await?;
+    if let Some(id) = found {
+        return Ok(id);
+    }
+    sqlx::query_scalar(
+        "INSERT INTO accounts (budget_id, name, emoji, currency, kind, position)
+         VALUES ($1, $2, '🎯', $3, 'savings', (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1)) RETURNING id",
+    )
+    .bind(cats.budget).bind(name).bind(currency)
+    .fetch_one(&mut **cats.tx)
+    .await
+}
+
+/// The everyday account in that currency money for savings came from: the person's own, else shared, else a new one.
+async fn regular_account(cats: &mut Categories<'_>, user: i64, currency: &str) -> sqlx::Result<i64> {
+    let found: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM accounts WHERE budget_id = $1 AND kind = 'regular' AND currency = $2 AND NOT archived
+         ORDER BY (owner_id IS NOT DISTINCT FROM $3) DESC, (owner_id IS NULL) DESC, position, id LIMIT 1",
+    )
+    .bind(cats.budget).bind(currency).bind(user)
+    .fetch_optional(&mut **cats.tx)
+    .await?;
+    if let Some(id) = found {
+        return Ok(id);
+    }
+    sqlx::query_scalar(
+        "INSERT INTO accounts (budget_id, name, emoji, currency, position)
+         VALUES ($1, 'Основной ' || $2, '💳', $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1)) RETURNING id",
+    )
+    .bind(cats.budget).bind(currency)
+    .fetch_one(&mut **cats.tx)
+    .await
 }

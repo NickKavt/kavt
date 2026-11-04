@@ -1,6 +1,7 @@
-//! Savings accounts with interest. An account is a subcategory of the savings category with
-//! interest settings. Deposits are ordinary savings operations in it; the server adds the
-//! interest as operations «Проценты» marked `source = 'interest'`.
+//! Interest on savings accounts (src/accounts.rs, kind 'savings' with `interest_kind` set). The
+//! account's money is its starting balance and everything booked on it: transfers in and out,
+//! income and expenses. Interest is paid as income «Проценты» on the account, marked
+//! `source = 'interest'`; it is income of the month like any other.
 //!
 //! Interest is counted day by day at `rate / 365` of the balance and paid after tax:
 //! - a flexible account (like a daily-interest account) pays on the last day of every month,
@@ -49,10 +50,9 @@ impl Kind {
     }
 }
 
-/// Settings of an account as the app sends them.
+/// Interest settings of a savings account as the app sends them.
 #[derive(Deserialize)]
 pub struct AccountIn {
-    pub name: Option<String>,
     pub kind: Kind,
     /// Annual rate, percent.
     pub rate: f64,
@@ -60,7 +60,6 @@ pub struct AccountIn {
     #[serde(default)]
     pub tax: f64,
     pub term_days: Option<i64>,
-    pub currency: String,
     pub start: NaiveDate,
     /// The day a changed rate applies from; today if not given.
     pub rate_from: Option<NaiveDate>,
@@ -88,21 +87,17 @@ impl AccountIn {
     }
 }
 
-#[derive(Serialize)]
-pub struct AccountOut {
-    pub id: i64,
-    pub name: String,
+/// How a savings account earns, for the app.
+#[derive(Serialize, Clone)]
+pub struct InterestOut {
     pub kind: Kind,
     /// The rate and tax in force today.
     pub rate: f64,
     pub tax: f64,
     pub term_days: Option<i64>,
-    pub currency: String,
     pub start: String,
     /// Start of the current term of a term deposit.
     pub term_start: String,
-    /// Deposits less withdrawals, plus interest paid, up to today.
-    pub balance: f64,
     /// Earned since the last payment, after tax.
     pub accrued: f64,
     pub interest_paid: f64,
@@ -206,7 +201,7 @@ fn simulate(plan: &Plan, deposits: &[(NaiveDate, f64)], fixed: &BTreeSet<NaiveDa
 
 struct Account {
     id: i64,
-    name: String,
+    budget: i64,
     currency: String,
     plan: Plan,
     deposits: Vec<(NaiveDate, f64)>,
@@ -216,11 +211,44 @@ struct Account {
     paid: Vec<(i64, NaiveDate, f64)>,
 }
 
-/// Locks an account and reads it; `None` when the subcategory has no interest settings.
+/// The income subcategory interest is booked on, made the first time it is needed.
+pub async fn interest_category(tx: &mut Transaction<'_, Postgres>, budget: i64) -> sqlx::Result<i64> {
+    let root: Option<i64> = sqlx::query_scalar("SELECT id FROM categories WHERE budget_id = $1 AND type = 'income' AND parent_id IS NULL ORDER BY id LIMIT 1")
+        .bind(budget)
+        .fetch_optional(&mut **tx)
+        .await?;
+    let root = match root {
+        Some(id) => id,
+        None => {
+            sqlx::query_scalar("INSERT INTO categories (name, emoji, color, type, budget_id) VALUES ('Доход', '💰', '#9ece6a', 'income', $1) RETURNING id")
+                .bind(budget)
+                .fetch_one(&mut **tx)
+                .await?
+        }
+    };
+    let sub: Option<i64> = sqlx::query_scalar("SELECT id FROM categories WHERE parent_id = $1 AND name = $2 ORDER BY id LIMIT 1")
+        .bind(root).bind(INTEREST_NOTE)
+        .fetch_optional(&mut **tx)
+        .await?;
+    match sub {
+        Some(id) => Ok(id),
+        None => {
+            sqlx::query_scalar(
+                "INSERT INTO categories (name, emoji, color, type, parent_id, budget_id, visible_from)
+                 VALUES ($1, '•', '#545c7e', 'income', $2, $3, '2000-01-01') RETURNING id",
+            )
+            .bind(INTEREST_NOTE).bind(root).bind(budget)
+            .fetch_one(&mut **tx)
+            .await
+        }
+    }
+}
+
+/// Locks an account and reads it; `None` when it doesn't earn interest.
 async fn load(tx: &mut Transaction<'_, Postgres>, id: i64) -> sqlx::Result<Option<Account>> {
     let Some(r) = sqlx::query(
-        "SELECT id, name, acc_kind, acc_term_days, acc_currency, acc_start FROM categories
-         WHERE id = $1 AND acc_kind IS NOT NULL FOR UPDATE",
+        "SELECT id, budget_id, interest_kind, term_days, currency, interest_start, initial_amount, initial_date FROM accounts
+         WHERE id = $1 AND interest_kind IS NOT NULL FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
@@ -228,25 +256,27 @@ async fn load(tx: &mut Transaction<'_, Postgres>, id: i64) -> sqlx::Result<Optio
     else {
         return Ok(None);
     };
-    let currency: String = r.get::<Option<String>, _>(4).unwrap_or_default();
+    let currency: String = r.get(4);
     let start = r.get::<Option<String>, _>(5).as_deref().and_then(parse_day).unwrap_or_else(today);
-    let rates = sqlx::query("SELECT from_day, rate, tax FROM savings_rates WHERE category_id = $1 ORDER BY from_day")
+    let rates = sqlx::query("SELECT from_day, rate, tax FROM account_rates WHERE account_id = $1 ORDER BY from_day")
         .bind(id)
         .fetch_all(&mut **tx)
         .await?
         .iter()
         .filter_map(|r| Some((parse_day(&r.get::<String, _>(0))?, r.get(1), r.get(2))))
         .collect();
+    let initial: f64 = r.get(6);
+    let from = r.get::<Option<String>, _>(7).as_deref().and_then(parse_day);
     let rows = sqlx::query(
-        "SELECT id, transaction_date, amount, source FROM transactions
-         WHERE category_id = $1 AND type = 'savings' AND currency = $2 ORDER BY transaction_date, id",
+        "SELECT id, transaction_date, amount, type, source FROM transactions
+         WHERE account_id = $1 AND currency = $2 ORDER BY transaction_date, id",
     )
     .bind(id).bind(&currency)
     .fetch_all(&mut **tx)
     .await?;
     let mut acc = Account {
         id: r.get(0),
-        name: r.get(1),
+        budget: r.get(1),
         currency,
         plan: Plan { kind: Kind::parse(&r.get::<String, _>(2)), term_days: r.get::<Option<i64>, _>(3).unwrap_or(30), start, rates },
         deposits: Vec::new(),
@@ -254,25 +284,36 @@ async fn load(tx: &mut Transaction<'_, Postgres>, id: i64) -> sqlx::Result<Optio
         fixed_total: 0.0,
         paid: Vec::new(),
     };
+    // The starting balance is there on its day, or from the start of interest when it has none.
+    if initial != 0.0 {
+        acc.deposits.push((from.unwrap_or(start), initial));
+    }
     for row in rows {
         let Some(day) = parse_day(&row.get::<String, _>(1)) else { continue };
+        // Before the starting balance's day: already in it.
+        if from.is_some_and(|f| day < f) {
+            continue;
+        }
         let amount: f64 = row.get(2);
-        match row.get::<Option<String>, _>(3).as_deref() {
-            Some(INTEREST_SOURCE) => acc.paid.push((row.get(0), day, amount)),
-            Some(crate::db::WITHDRAWAL) => acc.deposits.push((day, -amount)),
-            Some(FIXED_SOURCE) => {
+        let kind: String = row.get(3);
+        match (kind.as_str(), row.get::<Option<String>, _>(4).as_deref()) {
+            ("income", Some(INTEREST_SOURCE)) => acc.paid.push((row.get(0), day, amount)),
+            ("income", Some(FIXED_SOURCE)) => {
                 acc.fixed.insert(day);
                 acc.fixed_total += amount;
                 acc.deposits.push((day, amount));
             }
-            _ => acc.deposits.push((day, amount)),
+            ("income", _) | ("transfer", Some(crate::accounts::IN)) => acc.deposits.push((day, amount)),
+            ("expense", _) | ("transfer", _) => acc.deposits.push((day, -amount)),
+            _ => {}
         }
     }
+    acc.deposits.sort_by_key(|(d, _)| *d);
     Ok(Some(acc))
 }
 
 /// Brings the server's interest payments of an account in line with what is due up to today.
-async fn sync(db: &PgPool, id: i64, budget: i64) -> sqlx::Result<Option<(Account, Simulation)>> {
+async fn sync(db: &PgPool, id: i64) -> sqlx::Result<Option<(Account, Simulation)>> {
     let mut tx = db.begin().await?;
     let Some(mut acc) = load(&mut tx, id).await? else { return Ok(None) };
     // Days up to yesterday are complete; a payment falls due once its last day is over.
@@ -299,15 +340,24 @@ async fn sync(db: &PgPool, id: i64, budget: i64) -> sqlx::Result<Option<(Account
             }
         }
     }
+    let mut category = None;
     for &(day, amount) in &due {
         if kept.iter().any(|(_, d, _)| *d == day) {
             continue;
         }
+        let cat = match category {
+            Some(c) => c,
+            None => {
+                let c = interest_category(&mut tx, acc.budget).await?;
+                category = Some(c);
+                c
+            }
+        };
         let op: i64 = sqlx::query_scalar(
-            "INSERT INTO transactions (user_id, category_id, type, amount, currency, note, transaction_date, source)
-             VALUES ($1, $2, 'savings', $3, $4, $5, $6, $7) RETURNING id",
+            "INSERT INTO transactions (user_id, category_id, account_id, type, amount, currency, note, transaction_date, source)
+             VALUES ($1, $2, $3, 'income', $4, $5, $6, $7, $8) RETURNING id",
         )
-        .bind(budget).bind(acc.id).bind(amount).bind(&acc.currency).bind(INTEREST_NOTE).bind(day.to_string()).bind(INTEREST_SOURCE)
+        .bind(acc.budget).bind(cat).bind(acc.id).bind(amount).bind(&acc.currency).bind(INTEREST_NOTE).bind(day.to_string()).bind(INTEREST_SOURCE)
         .fetch_one(&mut *tx)
         .await?;
         kept.push((op, day, amount));
@@ -321,7 +371,7 @@ async fn sync(db: &PgPool, id: i64, budget: i64) -> sqlx::Result<Option<(Account
     Ok(Some((acc, sim)))
 }
 
-fn describe(acc: &Account, sim: &Simulation) -> AccountOut {
+fn describe(acc: &Account, sim: &Simulation) -> InterestOut {
     let today = today();
     let (rate, tax) = acc.plan.rate_on(today);
     // What comes next if nothing is added: the same calculation a year ahead.
@@ -330,19 +380,13 @@ fn describe(acc: &Account, sim: &Simulation) -> AccountOut {
     let (next_date, next_amount) = future.first().map(|&&(d, a)| (d, a)).unwrap_or((today, 0.0));
     let year: f64 = future.iter().filter(|(d, _)| *d <= today + Duration::days(365)).map(|(_, a)| a).sum();
     let paid: f64 = acc.paid.iter().map(|(_, _, a)| a).sum::<f64>() + acc.fixed_total;
-    let balance = acc.deposits.iter().filter(|(d, _)| *d <= today).map(|(_, a)| a).sum::<f64>()
-        + acc.paid.iter().filter(|(_, d, _)| *d <= today).map(|(_, _, a)| a).sum::<f64>();
-    AccountOut {
-        id: acc.id,
-        name: acc.name.clone(),
+    InterestOut {
         kind: acc.plan.kind,
         rate,
         tax,
         term_days: (acc.plan.kind == Kind::Term).then_some(acc.plan.term_days),
-        currency: acc.currency.clone(),
         start: acc.plan.start.to_string(),
         term_start: sim.term_start.to_string(),
-        balance: round2(balance),
         accrued: round2(sim.accrued),
         interest_paid: round2(paid),
         next_payout_date: next_date.to_string(),
@@ -351,45 +395,36 @@ fn describe(acc: &Account, sim: &Simulation) -> AccountOut {
     }
 }
 
-/// Accounts of a budget, their interest brought up to today.
-pub async fn list(db: &PgPool, budget: i64) -> sqlx::Result<Vec<AccountOut>> {
-    let mut out = Vec::new();
+/// Interest of every earning account of a budget, brought up to today, by account id.
+pub async fn summaries(db: &PgPool, budget: i64) -> sqlx::Result<std::collections::HashMap<i64, InterestOut>> {
+    let mut out = std::collections::HashMap::new();
     for id in account_ids(db, Some(budget)).await? {
-        if let Some((acc, sim)) = sync(db, id, budget).await? {
-            out.push(describe(&acc, &sim));
+        if let Some((acc, sim)) = sync(db, id).await? {
+            out.insert(id, describe(&acc, &sim));
         }
     }
     Ok(out)
 }
 
-pub async fn one(db: &PgPool, id: i64, budget: i64) -> sqlx::Result<Option<AccountOut>> {
-    Ok(sync(db, id, budget).await?.map(|(acc, sim)| describe(&acc, &sim)))
-}
-
 /// Brings the interest of a budget's accounts up to date, e.g. before showing its month.
 pub async fn sync_budget(db: &PgPool, budget: i64) -> sqlx::Result<()> {
     for id in account_ids(db, Some(budget)).await? {
-        sync(db, id, budget).await?;
+        sync(db, id).await?;
     }
     Ok(())
 }
 
-/// Every account of every budget; the background worker calls it.
+/// Every earning account of every budget; the background worker calls it.
 pub async fn sync_all(db: &PgPool) -> sqlx::Result<()> {
-    let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
-        "SELECT id, budget_id FROM categories WHERE acc_kind IS NOT NULL AND archived_from IS NULL AND type = 'savings' ORDER BY id",
-    )
-    .fetch_all(db)
-    .await?;
-    for (id, budget) in rows {
-        sync(db, id, budget.unwrap_or(0)).await?;
+    for id in account_ids(db, None).await? {
+        sync(db, id).await?;
     }
     Ok(())
 }
 
 async fn account_ids(db: &PgPool, budget: Option<i64>) -> sqlx::Result<Vec<i64>> {
     sqlx::query_scalar(
-        "SELECT id FROM categories WHERE acc_kind IS NOT NULL AND archived_from IS NULL AND type = 'savings'
+        "SELECT id FROM accounts WHERE interest_kind IS NOT NULL AND NOT archived AND kind = 'savings'
            AND ($1::BIGINT IS NULL OR budget_id = $1) ORDER BY id",
     )
     .bind(budget)
@@ -397,31 +432,31 @@ async fn account_ids(db: &PgPool, budget: Option<i64>) -> sqlx::Result<Vec<i64>>
     .await
 }
 
-/// Gives a savings subcategory interest settings, or changes them. A changed rate or tax
-/// applies from `rate_from` (today by default); everything else is worked out again.
-pub async fn configure(db: &PgPool, id: i64, budget: i64, a: &AccountIn) -> sqlx::Result<()> {
+/// Gives a savings account interest, or changes it. A changed rate or tax applies from
+/// `rate_from` (today by default); everything else is worked out again.
+pub async fn configure(db: &PgPool, id: i64, a: &AccountIn) -> sqlx::Result<()> {
     let mut tx = db.begin().await?;
-    sqlx::query("UPDATE categories SET acc_kind = $1, acc_term_days = $2, acc_currency = $3, acc_start = $4 WHERE id = $5")
-        .bind(a.kind.as_str()).bind(a.term_days).bind(&a.currency).bind(a.start.to_string()).bind(id)
+    sqlx::query("UPDATE accounts SET interest_kind = $1, term_days = $2, interest_start = $3 WHERE id = $4")
+        .bind(a.kind.as_str()).bind(a.term_days).bind(a.start.to_string()).bind(id)
         .execute(&mut *tx)
         .await?;
     let start = a.start.to_string();
     // Rates that began before the start: only the one in force on the start day matters, and
     // it now begins on the start.
     let in_force: Option<(String, f64, f64)> = sqlx::query_as(
-        "SELECT from_day, rate, tax FROM savings_rates WHERE category_id = $1 AND from_day <= $2 ORDER BY from_day DESC LIMIT 1",
+        "SELECT from_day, rate, tax FROM account_rates WHERE account_id = $1 AND from_day <= $2 ORDER BY from_day DESC LIMIT 1",
     )
     .bind(id).bind(&start)
     .fetch_optional(&mut *tx)
     .await?;
-    sqlx::query("DELETE FROM savings_rates WHERE category_id = $1 AND from_day <= $2").bind(id).bind(&start).execute(&mut *tx).await?;
+    sqlx::query("DELETE FROM account_rates WHERE account_id = $1 AND from_day <= $2").bind(id).bind(&start).execute(&mut *tx).await?;
     if let Some((_, rate, tax)) = in_force {
-        sqlx::query("INSERT INTO savings_rates (category_id, from_day, rate, tax) VALUES ($1, $2, $3, $4)")
+        sqlx::query("INSERT INTO account_rates (account_id, from_day, rate, tax) VALUES ($1, $2, $3, $4)")
             .bind(id).bind(&start).bind(rate).bind(tax)
             .execute(&mut *tx)
             .await?;
     }
-    let rates: Vec<(String, f64, f64)> = sqlx::query_as("SELECT from_day, rate, tax FROM savings_rates WHERE category_id = $1 ORDER BY from_day")
+    let rates: Vec<(String, f64, f64)> = sqlx::query_as("SELECT from_day, rate, tax FROM account_rates WHERE account_id = $1 ORDER BY from_day")
         .bind(id)
         .fetch_all(&mut *tx)
         .await?;
@@ -430,27 +465,27 @@ pub async fn configure(db: &PgPool, id: i64, budget: i64, a: &AccountIn) -> sqlx
     if current.is_none_or(|&(_, r, t)| (r - a.rate).abs() > 1e-9 || (t - a.tax).abs() > 1e-9) {
         let from = if rates.is_empty() { start.clone() } else { a.rate_from.unwrap_or_else(self::today).max(a.start).to_string() };
         // A rate from a day replaces what was set for that day and after.
-        sqlx::query("DELETE FROM savings_rates WHERE category_id = $1 AND from_day >= $2").bind(id).bind(&from).execute(&mut *tx).await?;
-        sqlx::query("INSERT INTO savings_rates (category_id, from_day, rate, tax) VALUES ($1, $2, $3, $4)")
+        sqlx::query("DELETE FROM account_rates WHERE account_id = $1 AND from_day >= $2").bind(id).bind(&from).execute(&mut *tx).await?;
+        sqlx::query("INSERT INTO account_rates (account_id, from_day, rate, tax) VALUES ($1, $2, $3, $4)")
             .bind(id).bind(&from).bind(a.rate).bind(a.tax)
             .execute(&mut *tx)
             .await?;
     }
     tx.commit().await?;
-    sync(db, id, budget).await?;
+    sync(db, id).await?;
     Ok(())
 }
 
 /// Stops interest on an account: what was paid stays, as payments nothing recalculates.
-pub async fn stop(db: &PgPool, id: i64, budget: i64) -> sqlx::Result<()> {
-    sync(db, id, budget).await?;
+pub async fn stop(db: &PgPool, id: i64) -> sqlx::Result<()> {
+    sync(db, id).await?;
     let mut tx = db.begin().await?;
-    sqlx::query("UPDATE categories SET acc_kind = NULL, acc_term_days = NULL, acc_currency = NULL, acc_start = NULL WHERE id = $1")
+    sqlx::query("UPDATE accounts SET interest_kind = NULL, term_days = NULL, interest_start = NULL WHERE id = $1")
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM savings_rates WHERE category_id = $1").bind(id).execute(&mut *tx).await?;
-    sqlx::query("UPDATE transactions SET source = $2 WHERE category_id = $1 AND source = $3")
+    sqlx::query("DELETE FROM account_rates WHERE account_id = $1").bind(id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE transactions SET source = $2 WHERE account_id = $1 AND source = $3")
         .bind(id).bind(FIXED_SOURCE).bind(INTEREST_SOURCE)
         .execute(&mut *tx)
         .await?;

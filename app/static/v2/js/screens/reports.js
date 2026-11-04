@@ -100,7 +100,7 @@ function Bars({ p, report, currency, from, to }) {
 function InMain({ report }) {
   const settings = useStore().home?.settings;
   const main = settings?.main_currency;
-  if (!main || settings.rate_source === "off") return null;
+  if (!main || settings.rate_source === "off" || useStore().me?.show_converted === false) return null;
   const sums = { expense: 0, income: 0 };
   let missing = 0, foreign = false;
   for (const op of report.transactions) {

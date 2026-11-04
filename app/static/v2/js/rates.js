@@ -5,7 +5,7 @@ import { api } from "./api.js";
 import { state, update } from "./store.js";
 
 const KEY = "budget:v2:rates";
-export const SOURCES = ["tcmb", "cbr", "ecb"];
+export const SOURCES = ["tcmb", "cbr", "ecb", "fawaz"];
 /** Codes for links to Google. */
 const CODE = { "₺": "TRY", "$": "USD", "€": "EUR", "₽": "RUB" };
 

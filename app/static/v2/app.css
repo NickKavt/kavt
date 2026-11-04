@@ -286,8 +286,8 @@ select.field { appearance: none; -webkit-appearance: none; }
 .tabbar-detail { display: none; }
 
 /* Sheets */
-.sheet-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; align-items: flex-end; justify-content: center; background: rgba(10, 10, 16, 0.6); animation: fade 0.18s ease; }
-.sheet { width: 100%; max-width: 520px; max-height: 90vh; display: flex; flex-direction: column; border-radius: 22px 22px 0 0; background: #1f2131; border: 1px solid var(--line); border-bottom: none;
+.sheet-backdrop { position: fixed; left: 0; right: 0; top: var(--vvtop, 0px); height: var(--vvh, 100%); z-index: 60; display: flex; align-items: flex-end; justify-content: center; background: rgba(10, 10, 16, 0.6); animation: fade 0.18s ease; }
+.sheet { width: 100%; max-width: 520px; max-height: calc(var(--vvh, 100vh) - 12px - env(safe-area-inset-top)); display: flex; flex-direction: column; border-radius: 22px 22px 0 0; background: #1f2131; border: 1px solid var(--line); border-bottom: none;
   padding: 6px 14px calc(16px + env(safe-area-inset-bottom)); animation: rise 0.22s cubic-bezier(0.32, 0.72, 0, 1); }
 .sheet-handle { width: 38px; height: 4px; border-radius: 4px; background: var(--line-strong); margin: 4px auto 8px; flex: none; }
 .sheet-title { font-size: 17px; font-weight: 700; color: var(--text); margin: 0 2px 12px; flex: none; }
@@ -372,3 +372,76 @@ select.field { appearance: none; -webkit-appearance: none; }
 .auth-fields { display: flex; flex-direction: column; gap: 12px; }
 .code-input::placeholder { font: 15px/1.2 system-ui, sans-serif; letter-spacing: 0; }
 a.btn { display: block; text-align: center; text-decoration: none; }
+
+/* Accounts */
+.accounts-card { margin-top: 12px; }
+.accounts-head { padding: 10px 14px 4px; display: flex; align-items: center; justify-content: space-between; }
+.neg { color: var(--danger); }
+.account-pick { display: flex; flex-direction: column; gap: 6px; }
+.account-balance { display: flex; flex-direction: column; gap: 2px; padding: 4px 2px 8px; }
+.account-balance-value { font-size: 28px; font-weight: 700; color: var(--text); }
+.money-currency:disabled { opacity: 1; cursor: default; }
+.row-muted { opacity: 0.6; }
+.warn { padding: 8px 10px; border-radius: 10px; background: rgba(224, 175, 104, 0.12); color: #e0af68; }
+.pick-bad { padding: 6px; border: 1.5px solid var(--danger); border-radius: 14px; background: rgba(247, 118, 142, 0.08); }
+.bad-label { color: var(--danger); }
+.error-note { padding: 8px 10px; border-radius: 10px; background: rgba(247, 118, 142, 0.12); color: var(--danger); }
+
+/* Account select and its list */
+.account-select { display: flex; flex-direction: column; gap: 6px; }
+.account-field { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; cursor: pointer; }
+.af-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.af-balance { flex: none; font-weight: 600; color: var(--text-2); }
+/* The same mark as rows that open something (Row's chevron), at the right edge. */
+.af-arrow { flex: none; margin-left: auto; color: var(--muted); font-size: 20px; line-height: 1; }
+.field-bad { border-color: var(--danger) !important; }
+.picker-backdrop { position: fixed; left: 0; right: 0; top: var(--vvtop, 0px); height: var(--vvh, 100%); z-index: 70; display: flex; align-items: flex-end; justify-content: center; background: rgba(10, 10, 16, 0.55); animation: fade 0.15s ease; }
+.picker { width: 100%; max-width: 520px; max-height: calc(var(--vvh, 100vh) - 12px - env(safe-area-inset-top)); display: flex; flex-direction: column; border-radius: 20px 20px 0 0; background: var(--bg); padding: 12px 10px calc(12px + env(safe-area-inset-bottom)); animation: rise 0.2s cubic-bezier(0.32, 0.72, 0, 1); }
+.picker-title { padding: 4px 8px 8px; font-weight: 700; color: var(--text); }
+.picker-list { overflow-y: auto; overscroll-behavior: contain; }
+.picker-group { padding: 10px 8px 4px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
+.picker-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 8px; border: none; border-radius: 12px; background: none; color: var(--text-2); text-align: left; }
+.picker-row.active { background: rgba(122, 162, 247, 0.12); }
+.pr-icon { width: 24px; text-align: center; font-size: 18px; }
+.pr-text { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pr-name { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-balance { flex: none; font-weight: 600; }
+.pr-check { width: 16px; color: var(--accent); }
+/* Transfer */
+/* Transfer: "from" and "to" are one block; the swap button sits on the line between them. */
+.transfer-pair { position: relative; display: flex; flex-direction: column; }
+.transfer-pair .account-select { gap: 0; }
+.transfer-pair .account-select:first-child .account-field { border-bottom-left-radius: 0; border-bottom-right-radius: 0; border-bottom-width: 0.5px; }
+.transfer-pair .account-select:nth-child(2) .account-field { border-top-left-radius: 0; border-top-right-radius: 0; border-top-width: 0.5px; }
+.af-inside { display: grid; grid-template-columns: 1fr auto auto; grid-template-areas: "cap cap arrow" "main bal arrow"; align-items: center; column-gap: 8px; row-gap: 2px; }
+.af-inside .af-caption { grid-area: cap; }
+.af-inside .af-main { grid-area: main; }
+.af-inside .af-balance { grid-area: bal; }
+.af-inside .af-arrow { grid-area: arrow; margin-left: 0; }
+/* Only the transfer's from/to block keeps room on the right for the round swap button. */
+.transfer-pair .af-inside { padding-right: 64px; }
+.af-caption { font-size: 12px; color: var(--muted); }
+.swap-btn { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); z-index: 2; width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 50%; background: var(--bg); color: var(--text); font-size: 18px; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3); }
+.rate-row { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.rate-input { flex: 1; min-width: 0; }
+/* Savings accounts */
+.savings-card { margin-top: 12px; }
+.savings-total { padding: 0 14px 6px; font-size: 22px; color: var(--text); }
+.savings-goal { display: flex; flex-direction: column; gap: 6px; padding: 0 14px 8px; }
+.savings-goal-btn { align-self: flex-start; padding: 0 14px 8px; }
+.savings-row .row-text { gap: 4px; }
+.savings-row .bar { height: 4px; }
+.savings-row .row-right { display: flex; flex-direction: column; align-items: flex-end; color: var(--text); }
+.interest-card { display: flex; flex-direction: column; gap: 6px; }
+.interest-form { padding: 10px; border: 1px solid var(--line); border-radius: 14px; }
+.switch-row { cursor: pointer; justify-content: space-between; }
+.my-currencies { max-height: 50vh; }
+.pr-icon.pr-code { width: 40px; font-size: 12px; font-weight: 700; color: var(--muted); }
+.settings-lang { margin: 14px 0 4px; }
+/* In the transfer block the round swap button takes the right edge; no second mark there. */
+.transfer-pair .af-arrow { display: none; }
+.af-inside .af-arrow { align-self: center; }
+/* Lists with a search keep one height, so the search field doesn't move as results narrow. */
+.picker-search, .sheet-tall { height: min(78vh, calc(var(--vvh, 100vh) - 12px - env(safe-area-inset-top))); }
+.picker-search .picker-list, .sheet-tall .sheet-body { flex: 1; min-height: 0; }
+.sheet-tall .my-currencies { max-height: none; flex: 1; min-height: 0; overflow-y: auto; }

@@ -21,7 +21,7 @@ export async function loadHome() {
   const month = state.month;
   update({ homeLoading: true });
   try {
-    const home = await api(`/api/home?month=${ymd(month)}`);
+    const home = await api(`/api/home?month=${ymd(month)}&today=${ymd(new Date())}`);
     // A slow answer for a month the user has already left is dropped.
     if (ymd(month) !== ymd(state.month)) return;
     update({ home });
@@ -56,8 +56,8 @@ export function setMonth(month) {
 }
 
 /** Adds an expense, income or savings operation. */
-export async function addOperation({ category, subcategoryId, amount, currency, note, date }) {
-  const body = { amount, currency, note: note || "", transaction_date: date };
+export async function addOperation({ category, subcategoryId, amount, currency, note, date, accountId }) {
+  const body = { amount, currency, note: note || "", transaction_date: date, account_id: accountId ?? null };
   if (category.type === "expense") {
     await api(`/api/categories/${category.id}/expenses`, { method: "POST", body: { ...body, is_debt: false, subcategory_id: subcategoryId ?? null } });
   } else {
@@ -68,14 +68,26 @@ export async function addOperation({ category, subcategoryId, amount, currency, 
 }
 
 /** Takes money out of savings (the category or one of its accounts) back into the month. */
-export async function withdraw({ category, subcategoryId, amount, currency, note, date }) {
-  const body = { amount, currency, note: note || "", transaction_date: date };
+export async function withdraw({ category, subcategoryId, amount, currency, note, date, accountId }) {
+  const body = { amount, currency, note: note || "", transaction_date: date, account_id: accountId ?? null };
   await api(`/api/savings/withdraw?category_id=${subcategoryId ?? category.id}`, { method: "POST", body });
 }
 
 /** Moves money between savings accounts; both halves are created together. */
 export const transfer = ({ fromId, toId, amount, currency, note, date }) =>
   api("/api/savings/transfer", { method: "POST", body: { from_id: fromId, to_id: toId, amount, currency, note: note || "", transaction_date: date } });
+
+// Accounts: cards and cash (src/accounts.rs).
+export const loadMoneyAccounts = () => api(`/api/accounts?today=${ymd(new Date())}`);
+export const createMoneyAccount = a => api("/api/accounts", { method: "POST", body: a });
+export const updateMoneyAccount = (id, a) => api(`/api/accounts/${id}`, { method: "PATCH", body: a });
+export const deleteMoneyAccount = id => api(`/api/accounts/${id}`, { method: "DELETE" });
+export const loadAccountOperations = id => api(`/api/accounts/${id}/operations`);
+const transferBody = ({ fromId, toId, amount, toAmount, note, date }) =>
+  ({ from_id: fromId, to_id: toId, amount, to_amount: toAmount ?? null, note: note || "", transaction_date: date });
+export const accountTransfer = t => api("/api/accounts/transfers", { method: "POST", body: transferBody(t) });
+export const updateAccountTransfer = (id, t) => api(`/api/accounts/transfers/${id}`, { method: "PATCH", body: transferBody(t) });
+export const deleteAccountTransfer = id => api(`/api/accounts/transfers/${id}`, { method: "DELETE" });
 
 export const updateOperation = (id, patch) => api(`/api/transactions/${id}`, { method: "PATCH", body: patch });
 export const deleteOperation = id => api(`/api/transactions/${id}`, { method: "DELETE" });
@@ -91,11 +103,9 @@ export const renameSubcategory = (sub, name) =>
   api(`/api/subcategories/${sub.id}`, { method: "PATCH", body: { name, emoji: sub.emoji || "•", color: sub.color || "#545c7e" } });
 export const deleteSubcategory = id => api(`/api/subcategories/${id}`, { method: "DELETE" });
 
-export const loadAccounts = () => api("/api/savings/accounts");
-export const createAccount = a => api("/api/savings/accounts", { method: "POST", body: a });
-export const updateAccount = (id, a) => api(`/api/savings/accounts/${id}`, { method: "PATCH", body: a });
-export const stopAccount = id => api(`/api/savings/accounts/${id}`, { method: "DELETE" });
 
+export const savePrefs = prefs => api("/api/me/prefs", { method: "PUT", body: prefs });
+export const saveSavingsGoal = goal => api("/api/settings/goal", { method: "PUT", body: { savings_goal: goal } });
 export const saveSettings = settings => api("/api/settings", { method: "PUT", body: settings });
 
 export const loadReport = (from, to) => api(`/api/report?from=${ymd(from)}&to=${ymd(to)}`);
@@ -116,8 +126,8 @@ export const signOut = () => api("/api/auth/logout", { method: "POST" });
 
 export const loadRecurring = () => api("/api/recurring");
 /** A repeating operation from its first day; the server adds what is due right away. */
-export const createRecurring = ({ categoryId, amount, currency, note, every, start }) =>
-  api("/api/recurring", { method: "POST", body: { category_id: categoryId, amount, currency, note: note || "", every, start_date: start } });
+export const createRecurring = ({ categoryId, amount, currency, note, every, start, accountId }) =>
+  api("/api/recurring", { method: "POST", body: { category_id: categoryId, amount, currency, note: note || "", every, start_date: start, account_id: accountId ?? null } });
 export const updateRecurring = (id, patch) => api(`/api/recurring/${id}`, { method: "PATCH", body: patch });
 export const stopRecurring = id => api(`/api/recurring/${id}`, { method: "DELETE" });
 

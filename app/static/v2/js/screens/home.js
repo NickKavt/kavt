@@ -9,6 +9,7 @@ import { setMonth } from "../data.js";
 import { haptic } from "../tg.js";
 import { Empty, lastCurrency } from "../ui.js";
 import { useSwipe } from "./swipe.js";
+import { AccountsCard, SavingsCard } from "./accounts.js";
 import { RatesLine, Converted } from "./rates-ui.js";
 
 export function MonthBar() {
@@ -122,7 +123,8 @@ export function Home() {
   const sum = home.month_summary || {};
   const active = new Set([...spentIn, ...usedCurrencies(sum.income), ...usedCurrencies(sum.balance), ...usedCurrencies(sum.carry_in)]);
   // A fixed order, so the columns don't swap places as the amounts change.
-  const currencies = CURRENCIES.filter(c => active.has(c));
+  // A fixed order: the four first, then other currencies by code.
+  const currencies = [...CURRENCIES.filter(c => active.has(c)), ...[...active].filter(c => !CURRENCIES.includes(c)).sort()];
   if (!currencies.length) currencies.push(lastCurrency());
   const currency = currencies.includes(picked) ? picked : spentIn[0] || currencies[0];
   const spent = totals[currency] || 0;
@@ -130,7 +132,7 @@ export function Home() {
   // Biggest spending first; empty categories keep their own order at the end.
   const sorted = [...expenses].sort((a, b) => value(b) - value(a));
   const parts = sorted.filter(c => value(c) > 0).map(c => ({ value: value(c), color: c.color }));
-  const funds = ["savings", "income"].map(k => home.categories.find(c => c.type === k)).filter(Boolean);
+  const funds = ["income"].map(k => home.categories.find(c => c.type === k)).filter(Boolean);
 
   return html`<div ...${swipe}>
     <${MonthBar} />
@@ -142,11 +144,13 @@ export function Home() {
           ${sorted.map(c => html`<${ExpenseRow} key=${c.id} c=${c} currency=${currency} spent=${spent} />`)}
         </div>`}
       </div>
-      ${funds.length > 0 && html`<div class="home-side">
-        <div class="group cat-group">
+      <div class="home-side">
+        ${funds.length > 0 && html`<div class="group cat-group">
           ${funds.map(c => html`<${FundRow} key=${c.id} c=${c} savings=${home.savings_summary} income=${home.month_summary?.income} />`)}
-        </div>
-      </div>`}
+        </div>`}
+        <${SavingsCard} />
+        <${AccountsCard} />
+      </div>
     </div>
     <button type="button" class="fab" onClick=${() => { haptic(); openSheet("quickAdd", {}); }}>＋ ${t("home.addExpense")}</button>
   </div>`;

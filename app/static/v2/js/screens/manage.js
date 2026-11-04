@@ -3,16 +3,16 @@
 import { html } from "../../vendor/preact-htm.js";
 import { t, LANGS, currentLang, setLang, errorText } from "../i18n.js";
 import { useStore, openSheet, update, toast } from "../store.js";
-import { endOtherSessions, signOut, exportCsv } from "../data.js";
+import { endOtherSessions, signOut, exportCsv, savePrefs } from "../data.js";
 import { ask, haptic, telegramUser, openLink, tg } from "../tg.js";
-import { Row, Chips, lastCurrency } from "../ui.js";
-import { CURRENCIES } from "../format.js";
+import { Row, Chips, lastCurrency, ListSelect, sourceItems } from "../ui.js";
+import { myCurrencies } from "../format.js";
 import { SOURCES, setPrefs } from "../rates.js";
 import { RatesLine } from "./rates-ui.js";
 
 export function Manage() {
   const s = useStore();
-  const cats = (s.home?.categories || []).filter(c => c.type === "expense" || c.type === "savings");
+  const cats = (s.home?.categories || []).filter(c => c.type === "expense" || c.type === "income");
   const isAdmin = s.me?.role === "admin" || s.me?.role === "owner";
   const download = async () => {
     try {
@@ -32,6 +32,7 @@ export function Manage() {
     </div>
     <div class="section-title">${t("manage.budget")}</div>
     <div class="group">
+      <${Row} icon="💳" title=${t("accounts.title")} subtitle=${t("accounts.sub")} onClick=${() => openSheet("moneyAccounts", {})} />
       ${isAdmin
         ? html`<${Row} icon="👥" title=${t("users.title")} onClick=${() => openSheet("users", {})} />`
         : html`<div class="row muted">${t("manage.membersOnlyAdmins")}</div>`}
@@ -92,22 +93,22 @@ export function Settings() {
   return html`<div>
     <h1 class="screen-title">${t("settings.title")}</h1>
     ${name && html`<div class="muted who">${t("settings.signedInAs")} <b>${name}</b></div>`}
-    <div class="section-title">${t("settings.language")}</div>
+    <div class="settings-lang"><${ListSelect} items=${Object.entries(LANGS).map(([code, l]) => ({ value: code, label: l.name }))} value=${currentLang()} onChange=${pick}
+      label=${t("settings.language")} /></div>
+    <div class="section-title">${t("currency.sectionRates")}</div>
     <div class="group">
-      ${Object.entries(LANGS).map(([code, l]) => html`<${Row} key=${code} title=${l.name} chevron=${false}
-        right=${code === currentLang() ? html`<span class="check">✓</span>` : ""} tone=${code === currentLang() ? "current" : ""} onClick=${() => pick(code)} />`)}
-    </div>
-    <div class="section-title">${t("rates.title")}</div>
-    <div class="group">
+      <${Row} icon="💱" title=${t("currency.myTitle")} subtitle=${myCurrencies(s).join(" ")} onClick=${() => openSheet("myCurrencies", {})} />
+      <${Row} icon="≈" title=${t("currency.showConverted")} subtitle=${t("currency.showConvertedHint")} chevron=${false}
+        right=${html`<span class=${"switch" + (s.me?.show_converted !== false ? " on" : "")}></span>`}
+        onClick=${async () => { haptic(); const v = s.me?.show_converted === false; try { await savePrefs({ show_converted: v }); update({ me: { ...s.me, show_converted: v } }); } catch (e) { toast(errorText(e), "error"); } }} />
       <${Row} icon="💱" title=${t("rates.toggle")} subtitle=${t("rates.toggleHint")} chevron=${false}
         right=${html`<span class=${"switch" + (s.ratesPrefs.on ? " on" : "")}></span>`} onClick=${() => { haptic(); setPrefs({ on: !s.ratesPrefs.on }); }} />
     </div>
     ${s.ratesPrefs.on && html`<div class="card form rates-settings">
-      <div class="muted small">${t("rates.source")}</div>
-      <${Chips} items=${SOURCES.map(x => [x, t("rates.src." + x)])} value=${s.ratesPrefs.source} onChange=${source => setPrefs({ source })} />
+      <${ListSelect} items=${sourceItems(SOURCES)} value=${s.ratesPrefs.source} onChange=${source => setPrefs({ source })} label=${t("rates.source")} />
       ${s.ratesPrefs.source === "ecb" && html`<div class="muted small">${t("rates.ecbNoRub")}</div>`}
       <div class="muted small">${t("rates.show")}</div>
-      <${Chips} items=${CURRENCIES.map(c => [c, c])} value=${null} active=${s.ratesPrefs.show}
+      <${Chips} items=${myCurrencies(s).map(c => [c, c])} value=${null} active=${s.ratesPrefs.show}
         onChange=${c => setPrefs({ show: s.ratesPrefs.show.includes(c) ? s.ratesPrefs.show.filter(x => x !== c) : [...s.ratesPrefs.show, c] })} />
       <${RatesLine} base=${lastCurrency()} />
     </div>`}

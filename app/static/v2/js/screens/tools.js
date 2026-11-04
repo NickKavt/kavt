@@ -2,12 +2,13 @@
 
 import { html, useEffect, useState } from "../../vendor/preact-htm.js";
 import { t, errorText, locale } from "../i18n.js";
-import { money, parseYmd, CURRENCIES } from "../format.js";
-import { closeSheet, toast, update, state } from "../store.js";
+import { money, parseYmd, myCurrencies } from "../format.js";
+import { closeSheet, toast, update, state, useStore } from "../store.js";
 import * as data from "../data.js";
 import { evalAmount } from "../calc.js";
 import { haptic, ask, tell } from "../tg.js";
 import { Sheet, Seg, Chips, MoneyField, Empty, lastCurrency } from "../ui.js";
+import { AccountPicker, activeAccounts } from "./accounts.js";
 import { FIELDS, readText, parse, guessColumns, isOwnExport, toRows } from "../csv.js";
 
 export const EVERY = ["week", "month", "year"];
@@ -22,13 +23,25 @@ function RecurringItem({ r, onChanged }) {
   const [amount, setAmount] = useState(String(r.amount).replace(".", ","));
   const [currency, setCurrency] = useState(r.currency);
   const [note, setNote] = useState(r.note || "");
+  const accounts = activeAccounts(useStore());
+  const [account, setAccount] = useState(r.account_id ?? null);
+  // The account sets the currency; another currency by hand moves to an account in it.
+  const pickAccount = id => {
+    setAccount(id);
+    const a = accounts.find(x => x.id === id);
+    if (a) setCurrency(a.currency);
+  };
+  const pickCurrency = c => {
+    setCurrency(c);
+    if (accounts.find(x => x.id === account)?.currency !== c) setAccount(accounts.find(x => x.currency === c)?.id ?? null);
+  };
   const title = r.subcategory_name ? `${r.category_name} · ${r.subcategory_name}` : r.category_name;
   const sign = r.type === "expense" ? "−" : "+";
   const save = async () => {
     const value = evalAmount(amount);
     if (!(value > 0)) return tell(t("form.enterAmount"));
     try {
-      await data.updateRecurring(r.id, { amount: value, currency, note: note.trim() });
+      await data.updateRecurring(r.id, { amount: value, currency, note: note.trim(), account_id: account });
       haptic("success");
       toast(t("recurring.saved"));
       setOpen(false);
@@ -57,7 +70,8 @@ function RecurringItem({ r, onChanged }) {
       <span class=${"op-amount" + (r.type === "expense" ? "" : " op-income")}>${sign}${money(r.amount, r.currency)}</span>
     </button>
     ${open && html`<div class="form recurring-edit">
-      <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${setCurrency} onEnter=${save} />
+      <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${pickCurrency} onEnter=${save} />
+      <${AccountPicker} accounts=${accounts} value=${account} onChange=${pickAccount} />
       <input class="field" placeholder=${t("form.note")} value=${note} onInput=${e => setNote(e.currentTarget.value)} maxlength="200" />
       <div class="muted small">${t("recurring.fromNext")}</div>
       <button type="button" class="btn btn-primary" onClick=${save}>${t("common.save")}</button>
@@ -169,7 +183,7 @@ function ImportSheet() {
           </label>`)}
         </div>
         ${cols.currency < 0 && html`<div class="muted small">${t("import.currencyAll")}</div>
-          <${Chips} items=${CURRENCIES.map(c => [c, c])} value=${currency} onChange=${c => { setCurrency(c); setPreview(null); }} />`}
+          <${Chips} items=${myCurrencies(state).map(c => [c, c])} value=${currency} onChange=${c => { setCurrency(c); setPreview(null); }} />`}
         ${cols.type < 0 && html`<div class="muted small">${t("import.noType")}</div>
           <${Seg} options=${[[true, t("import.bySign")], [false, t("import.allExpenses")]]} value=${bySign} onChange=${v => { setBySign(v); setPreview(null); }} />`}
         ${!preview && html`<button type="button" class="btn btn-primary" disabled=${busy} onClick=${check}>${t("import.check")}</button>`}

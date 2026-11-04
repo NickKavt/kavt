@@ -11,8 +11,15 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 const KEEP: Duration = Duration::from_secs(3600);
-/// Currencies of the app and their codes at the sources.
+/// The four currencies the app has always had keep their symbols as ids; every other currency
+/// is its ISO code (`GBP`, `KZT`).
 const CODES: [(&str, &str); 4] = [("₺", "TRY"), ("$", "USD"), ("€", "EUR"), ("₽", "RUB")];
+
+/// The app's id of an ISO code: a symbol for the four, else the code in capitals.
+pub fn app_id(code: &str) -> String {
+    let c = code.trim().to_ascii_uppercase();
+    CODES.iter().find(|(_, k)| *k == c).map_or(c, |(sym, _)| sym.to_string())
+}
 
 #[derive(Clone, Serialize)]
 pub struct Rates {
@@ -33,9 +40,14 @@ pub fn source_name(s: &str) -> Option<&'static str> {
         "tcmb" => Some("tcmb"),
         "cbr" => Some("cbr"),
         "ecb" => Some("ecb"),
+        // currency-api (github.com/fawazahmed0/exchange-api): daily, 200+ currencies, no key.
+        "fawaz" => Some("fawaz"),
         _ => None,
     }
 }
+
+/// The source asked when the chosen one has no rate for a currency.
+pub const FALLBACK: &str = "fawaz";
 
 impl Cache {
     pub async fn get(&self, source: &'static str) -> Result<Rates, String> {
@@ -74,7 +86,8 @@ async fn fetch(source: &'static str) -> Result<Rates, String> {
     let url = match source {
         "tcmb" => "https://www.tcmb.gov.tr/kurlar/today.xml".to_string(),
         "cbr" => "https://www.cbr.ru/scripts/XML_daily.asp".to_string(),
-        _ => "https://api.frankfurter.dev/v1/latest?from=EUR&to=TRY,USD".to_string(),
+        "fawaz" => "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/try.min.json".to_string(),
+        _ => "https://api.frankfurter.dev/v1/latest?from=EUR".to_string(),
     };
     get_parsed(&client()?, source, &url).await?.ok_or_else(|| format!("{url}: not published"))
 }
@@ -94,6 +107,7 @@ async fn get_parsed(client: &reqwest::Client, source: &'static str, url: &str) -
     let rates = match source {
         "tcmb" => parse_tcmb(&body),
         "cbr" => parse_cbr(&body),
+        "fawaz" => parse_fawaz(&body),
         _ => parse_ecb(&body),
     }
     .ok_or_else(|| format!("{url}: unexpected answer"))?;
@@ -130,7 +144,18 @@ pub async fn on_day(db: &PgPool, source: &'static str, day: NaiveDate) -> Result
         }
         // Both answer with the last rates published on or before the day asked.
         "cbr" => found = get_parsed(&client, source, &format!("https://www.cbr.ru/scripts/XML_daily.asp?date_req={}", day.format("%d/%m/%Y"))).await?,
-        _ => found = get_parsed(&client, source, &format!("https://api.frankfurter.dev/v1/{day}?from=EUR&to=TRY,USD")).await?,
+        // A file per day; a day not published yet (today, early) falls back to the one before.
+        "fawaz" => {
+            for back in 0..4 {
+                let d = day - chrono::Days::new(back);
+                let url = format!("https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@{d}/v1/currencies/try.min.json");
+                if let Some(r) = get_parsed(&client, source, &url).await? {
+                    found = Some(r);
+                    break;
+                }
+            }
+        }
+        _ => found = get_parsed(&client, source, &format!("https://api.frankfurter.dev/v1/{day}?from=EUR")).await?,
     }
     let rates = found.ok_or_else(|| format!("{source}: no rates for {day}"))?;
     sqlx::query("INSERT INTO daily_rates (source, day, published, in_try) VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT DO NOTHING")
@@ -141,30 +166,36 @@ pub async fn on_day(db: &PgPool, source: &'static str, day: NaiveDate) -> Result
     Ok(rates)
 }
 
-/// The app's symbol for a currency stored as a code by older versions (`TRY` → `₺`).
-pub fn symbol(currency: &str) -> &str {
+/// The app's id of a currency as stored or sent: `TRY` → `₺` for the four, `gbp` → `GBP`.
+pub fn symbol(currency: &str) -> String {
     let c = currency.trim();
-    CODES.iter().find(|(_, code)| code.eq_ignore_ascii_case(c)).map_or(c, |(sym, _)| sym)
+    if let Some((sym, _)) = CODES.iter().find(|(_, code)| code.eq_ignore_ascii_case(c)) {
+        return sym.to_string();
+    }
+    if c.len() == 3 && c.chars().all(|ch| ch.is_ascii_alphabetic()) { c.to_ascii_uppercase() } else { c.to_string() }
 }
 
 /// Units of `to` for one unit of `from`, by one source's rates.
 pub fn convert(r: &Rates, from: &str, to: &str) -> Option<f64> {
-    Some(r.in_try.get(symbol(from))? / r.in_try.get(symbol(to))?)
+    Some(r.in_try.get(&symbol(from))? / r.in_try.get(&symbol(to))?)
 }
 
 #[derive(Clone, Serialize, serde::Deserialize)]
 pub struct Settings {
     pub main_currency: String,
     pub rate_source: String,
+    /// The budget's savings goal in its main currency (changed by its own request).
+    #[serde(default)]
+    pub savings_goal: Option<f64>,
 }
 
 pub async fn settings(db: &PgPool, budget: i64) -> sqlx::Result<Settings> {
-    let row: Option<(String, String)> = sqlx::query_as("SELECT main_currency, rate_source FROM budget_settings WHERE budget_id = $1")
+    let row: Option<(String, String, Option<f64>)> = sqlx::query_as("SELECT main_currency, rate_source, savings_goal FROM budget_settings WHERE budget_id = $1")
         .bind(budget)
         .fetch_optional(db)
         .await?;
-    let (main_currency, rate_source) = row.unwrap_or_else(|| ("₺".into(), "tcmb".into()));
-    Ok(Settings { main_currency, rate_source })
+    let (main_currency, rate_source, savings_goal) = row.unwrap_or_else(|| ("₺".into(), "tcmb".into(), None));
+    Ok(Settings { main_currency, rate_source, savings_goal })
 }
 
 /// Saves the settings; the rates of the budget's operations are looked up again for them.
@@ -235,7 +266,18 @@ pub async fn fill(db: &PgPool, budget: Option<i64>) -> sqlx::Result<usize> {
         }
         match on_day(db, source, day).await {
             Ok(r) => {
-                let rate = convert(&r, &currency, &main);
+                let mut rate = convert(&r, &currency, &main);
+                let mut r = r;
+                // The chosen source doesn't list this currency: ask the one that lists them all.
+                if rate.is_none() && source != FALLBACK {
+                    if let Ok(f) = on_day(db, FALLBACK, day).await {
+                        rate = convert(&f, &currency, &main);
+                        if rate.is_some() {
+                            r = f;
+                        }
+                    }
+                }
+                let source = r.source;
                 // Only if the operation still has the day and currency the rate was found for:
                 // it may have been changed meanwhile, and then it waits for its own lookup.
                 sqlx::query(
@@ -282,13 +324,17 @@ fn attr<'a>(text: &'a str, name: &str) -> Option<&'a str> {
     Some(&text[start..start + text[start..].find('"')?])
 }
 
-/// TCMB: lira per unit; the mid of the forex buying and selling rates (selling may be empty).
+/// TCMB: lira per unit of every currency it lists; the mid of the forex buying and selling
+/// rates (selling may be empty).
 fn parse_tcmb(xml: &str) -> Option<Rates> {
     let date = dotted_date(attr(xml, "Tarih")?)?;
     let mut in_try = HashMap::from([("₺".to_string(), 1.0)]);
-    for (sym, code) in &CODES[1..] {
-        let Some(at) = xml.find(&format!("CurrencyCode=\"{code}\"")) else { continue };
-        let block = &xml[at..at + xml[at..].find("</Currency>")?];
+    let mut rest = xml;
+    while let Some(at) = rest.find("<Currency ") {
+        let block_end = rest[at..].find("</Currency>").map(|e| at + e)?;
+        let block = &rest[at..block_end];
+        rest = &rest[block_end..];
+        let Some(code) = attr(block, "CurrencyCode") else { continue };
         let unit = tag(block, "Unit").and_then(number).unwrap_or(1.0);
         let buy = tag(block, "ForexBuying").and_then(number);
         let sell = tag(block, "ForexSelling").and_then(number);
@@ -297,39 +343,65 @@ fn parse_tcmb(xml: &str) -> Option<Rates> {
             (Some(v), None) | (None, Some(v)) => v,
             _ => continue,
         };
-        in_try.insert(sym.to_string(), price / unit);
+        in_try.insert(app_id(code), price / unit);
     }
     (in_try.len() > 1).then_some(Rates { source: "tcmb", date, in_try, stale: false })
 }
 
-/// Bank of Russia: roubles per `Nominal` units; turned into lira per unit through TRY.
+/// Bank of Russia: roubles per `Nominal` units of each currency; turned into lira per unit through TRY.
 fn parse_cbr(xml: &str) -> Option<Rates> {
     let date = dotted_date(attr(xml, "Date")?)?;
-    let rub_per = |code: &str| -> Option<f64> {
-        let at = xml.find(&format!("<CharCode>{code}</CharCode>"))?;
-        let block = &xml[at..at + xml[at..].find("</Valute>")?];
-        Some(number(tag(block, "Value")?)? / number(tag(block, "Nominal")?)?)
-    };
-    let try_in_rub = rub_per("TRY")?;
+    let mut rub_per: HashMap<String, f64> = HashMap::new();
+    let mut rest = xml;
+    while let Some(at) = rest.find("<Valute") {
+        let block_end = rest[at..].find("</Valute>").map(|e| at + e)?;
+        let block = &rest[at..block_end];
+        rest = &rest[block_end..];
+        let (Some(code), Some(value), Some(nominal)) = (tag(block, "CharCode"), tag(block, "Value").and_then(number), tag(block, "Nominal").and_then(number)) else { continue };
+        rub_per.insert(code.to_string(), value / nominal);
+    }
+    let try_in_rub = *rub_per.get("TRY")?;
     let mut in_try = HashMap::from([("₺".to_string(), 1.0), ("₽".to_string(), 1.0 / try_in_rub)]);
-    for (sym, code) in [("$", "USD"), ("€", "EUR")] {
-        if let Some(v) = rub_per(code) {
-            in_try.insert(sym.to_string(), v / try_in_rub);
+    for (code, v) in rub_per {
+        if code != "TRY" {
+            in_try.insert(app_id(&code), v / try_in_rub);
         }
     }
     Some(Rates { source: "cbr", date, in_try, stale: false })
 }
 
-/// ECB through Frankfurter: per one euro. It has no rouble.
+/// ECB through Frankfurter: units of each currency per one euro. It has no rouble.
 fn parse_ecb(json: &str) -> Option<Rates> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let date = v["date"].as_str()?.to_string();
-    let try_per_eur = v["rates"]["TRY"].as_f64()?;
+    let rates = v["rates"].as_object()?;
+    let try_per_eur = rates.get("TRY")?.as_f64()?;
     let mut in_try = HashMap::from([("₺".to_string(), 1.0), ("€".to_string(), try_per_eur)]);
-    if let Some(usd_per_eur) = v["rates"]["USD"].as_f64() {
-        in_try.insert("$".to_string(), try_per_eur / usd_per_eur);
+    for (code, per_eur) in rates {
+        if let Some(x) = per_eur.as_f64().filter(|x| *x > 0.0) {
+            if code != "TRY" {
+                in_try.insert(app_id(code), try_per_eur / x);
+            }
+        }
     }
     Some(Rates { source: "ecb", date, in_try, stale: false })
+}
+
+/// currency-api: units of each currency per one lira.
+fn parse_fawaz(json: &str) -> Option<Rates> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let date = v["date"].as_str()?.to_string();
+    let per_try = v["try"].as_object()?;
+    let mut in_try = HashMap::from([("₺".to_string(), 1.0)]);
+    for (code, x) in per_try {
+        // ISO codes only: the file also lists crypto and metals under longer names.
+        if code.len() == 3 && code.chars().all(|c| c.is_ascii_alphabetic()) && code != "try" {
+            if let Some(x) = x.as_f64().filter(|x| x.is_finite() && *x > 0.0) {
+                in_try.insert(app_id(code), 1.0 / x);
+            }
+        }
+    }
+    (in_try.len() > 1).then_some(Rates { source: "fawaz", date, in_try, stale: false })
 }
 
 #[cfg(test)]
@@ -366,4 +438,16 @@ mod tests {
         assert!((r.in_try["$"] - 50.0).abs() < 1e-9);
         assert!(!r.in_try.contains_key("₽"));
     }
+}
+
+/// The budget's savings goal; `None` or 0 removes it.
+pub async fn save_goal(db: &PgPool, budget: i64, goal: Option<f64>) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO budget_settings (budget_id, savings_goal) VALUES ($1, $2)
+         ON CONFLICT (budget_id) DO UPDATE SET savings_goal = $2",
+    )
+    .bind(budget).bind(goal.filter(|g| *g > 0.0))
+    .execute(db)
+    .await?;
+    Ok(())
 }
