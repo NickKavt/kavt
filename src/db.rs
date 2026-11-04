@@ -429,6 +429,7 @@ pub async fn category_transactions(db: &PgPool, kind: &str, ids: &[i64], month: 
          LEFT JOIN users u ON u.id = t.user_id
          WHERE t.type = $1 AND t.category_id = ANY($2)
            AND t.transaction_date >= $3 AND t.transaction_date < $4
+           AND NOT (t.source = 'interest_fixed' AND t.amount = 0)
          ORDER BY t.created_at DESC, t.id DESC",
     )
     .bind(kind).bind(ids).bind(&month.0).bind(&month.1)
@@ -582,6 +583,8 @@ pub struct ReportDay {
 #[derive(Debug, Serialize)]
 pub struct ReportTransaction {
     pub id: i64,
+    /// The top-level category, to open the operation for editing.
+    pub category_id: i64,
     #[serde(rename = "type")]
     pub kind: String,
     pub amount: f64,
@@ -637,6 +640,7 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
          LEFT JOIN users u ON u.id = t.user_id
          WHERE c.budget_id = $1 AND t.transaction_date >= $2 AND t.transaction_date < $3
            AND NOT (t.type = 'savings' AND (COALESCE(t.note, '') LIKE 'Первоначальная сумма%' OR COALESCE(t.source, 'withdrawal') <> 'withdrawal'))
+           AND NOT (t.source = 'interest_fixed' AND t.amount = 0)
          ORDER BY t.transaction_date DESC, t.created_at DESC, t.id DESC",
     )
     .bind(budget).bind(from.to_string()).bind(&end)
@@ -658,6 +662,7 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
     for r in &rows {
         let t = ReportTransaction {
             id: r.get(0),
+            category_id: r.get(6),
             kind: r.get(1),
             amount: r.get(2),
             currency: r.get(3),

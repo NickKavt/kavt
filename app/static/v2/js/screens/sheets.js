@@ -11,7 +11,7 @@ import { haptic, ask, tell, openLink, openTelegramLink } from "../tg.js";
 import { Sheet, Seg, Chips, MoneyField, DateField, Row, Empty, lastCurrency, CurrencySelect, ListSelect, sourceItems } from "../ui.js";
 import { AddForm, INITIAL_NOTE, pct } from "./category.js";
 import { TOOL_SHEETS } from "./tools.js";
-import { ACCOUNT_SHEETS, AccountPicker, activeAccounts } from "./accounts.js";
+import { ACCOUNT_SHEETS, AccountPicker, activeAccounts, accountForCurrency } from "./accounts.js";
 
 async function attempt(fn, done) {
   try {
@@ -60,8 +60,13 @@ function QuickAdd() {
   <//>`;
 }
 
-function EditOperation({ op, categoryId }) {
+/** One operation: change or delete it. `back` is the sheet it was opened from, shown again after. */
+function EditOperation({ op, categoryId, back }) {
   const details = useStore().details[categoryId];
+  // Opened from an account or a report, the category's subcategories may not be loaded yet.
+  useEffect(() => { if (!details && categoryId) data.loadDetails(categoryId).catch(() => {}); }, [categoryId]);
+  const done = () => (back ? openSheet(back.kind, back.props) : closeSheet());
+  const interest = op.source === "interest" || op.source === "interest_fixed";
   const subs = details?.subcategories || [];
   const isInitial = op.type === "savings" && String(op.note || "").startsWith(INITIAL_NOTE);
   const [amount, setAmount] = useState(String(op.amount).replace(".", ","));
@@ -69,7 +74,9 @@ function EditOperation({ op, categoryId }) {
   const [note, setNote] = useState(isInitial ? "" : op.note || "");
   const [date, setDate] = useState(op.transaction_date);
   const currentSub = subs.find(x => x.name === op.subcategory_name)?.id ?? null;
-  const [sub, setSub] = useState(currentSub);
+  const [picked, setSub] = useState(undefined);
+  // Until one is picked, the operation's own (known once the category's details are loaded).
+  const sub = picked === undefined ? currentSub : picked;
   const accounts = activeAccounts(useStore());
   const [account, setAccount] = useState(op.account_id ?? null);
   // An operation that moves money is on an account; its currency is the account's.
@@ -82,24 +89,24 @@ function EditOperation({ op, categoryId }) {
   const pickCurrency = c => {
     setCurrency(c);
     const a = accounts.find(x => x.id === account);
-    if (onAccount && a?.currency !== c) setAccount(accounts.find(x => x.currency === c)?.id ?? null);
+    if (onAccount && a?.currency !== c) setAccount(accountForCurrency(state, account, c));
   };
   const save = async () => {
     const value = evalAmount(amount);
     if (!(value > 0)) return tell(t("form.enterAmount"));
     const patch = { amount: value, currency, transaction_date: date };
     if (!isInitial) patch.note = note.trim();
-    if (sub !== currentSub) patch.category_id = sub ?? categoryId;
+    if (picked !== undefined && sub !== currentSub) patch.category_id = sub ?? categoryId;
     if (onAccount && account != null && account !== op.account_id) patch.account_id = account;
     if (await attempt(() => data.updateOperation(op.id, patch), t("op.saved"))) {
-      closeSheet();
+      done();
       data.refresh();
     }
   };
   const remove = async () => {
-    if (!(await ask(t("op.confirmDelete")))) return;
+    if (!(await ask(interest ? t("op.confirmDeleteInterest") : t("op.confirmDelete")))) return;
     if (await attempt(() => data.deleteOperation(op.id), t("op.deleted"))) {
-      closeSheet();
+      done();
       data.refresh();
     }
   };

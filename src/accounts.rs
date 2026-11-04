@@ -83,10 +83,17 @@ pub async fn list(db: &PgPool, budget: i64, today: Option<NaiveDate>) -> sqlx::R
     let any: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM accounts WHERE budget_id = $1)").bind(budget).fetch_one(db).await?;
     if !any {
         let main = crate::rates::settings(db, budget).await?.main_currency;
-        sqlx::query("INSERT INTO accounts (budget_id, name, emoji, currency) VALUES ($1, 'Основной', '💳', $2)")
-            .bind(budget).bind(main)
-            .execute(db)
-            .await?;
+        // Two requests at once must not both make it; the lock is the one pick_account() takes.
+        let mut tx = db.begin().await?;
+        sqlx::query("SELECT pg_advisory_xact_lock(7001, $1::int)").bind(budget).execute(&mut *tx).await?;
+        sqlx::query(
+            "INSERT INTO accounts (budget_id, name, emoji, currency)
+             SELECT $1, 'Основной', '💳', $2 WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE budget_id = $1)",
+        )
+        .bind(budget).bind(main)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
     }
     const SQL: &str = concat!(
         "SELECT a.id, a.name, a.emoji, a.currency, a.owner_id,
@@ -101,9 +108,9 @@ pub async fn list(db: &PgPool, budget: i64, today: Option<NaiveDate>) -> sqlx::R
          WHERE a.budget_id = $1
          ORDER BY a.archived, a.position, a.id"
     );
+    // Interest first: bringing it up to date can add payments and return an ended deposit.
+    let interest = crate::savings::summaries(db, budget).await?;
     let rows = sqlx::query(SQL).bind(budget).bind(today.to_string()).fetch_all(db).await?;
-    let earning = rows.iter().any(|r| r.get::<bool, _>(13));
-    let interest = if earning { crate::savings::summaries(db, budget).await? } else { Default::default() };
     Ok(rows
         .iter()
         .map(|r| AccountOut {
@@ -208,7 +215,14 @@ pub async fn update(db: &PgPool, budget: i64, id: i64, a: &AccountIn) -> sqlx::R
         return Ok(Err(Problem::Owner));
     }
     if old != currency {
-        let used: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM transactions WHERE account_id = $1)").bind(id).fetch_one(db).await?;
+        // Its operations, and recurring ones that book on it, are in the old currency.
+        let used: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM transactions WHERE account_id = $1)
+                 OR EXISTS (SELECT 1 FROM recurring WHERE account_id = $1 OR to_account_id = $1)",
+        )
+        .bind(id)
+        .fetch_one(db)
+        .await?;
         if used {
             return Ok(Err(Problem::CurrencyInUse));
         }
@@ -233,7 +247,12 @@ pub async fn update(db: &PgPool, budget: i64, id: i64, a: &AccountIn) -> sqlx::R
 
 /// An account without operations is deleted; one with them is archived, so its history stays.
 pub async fn remove(db: &PgPool, budget: i64, id: i64) -> sqlx::Result<Option<&'static str>> {
-    let used: Option<bool> = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM transactions WHERE account_id = a.id) FROM accounts a WHERE a.id = $1 AND a.budget_id = $2")
+    // One a recurring transfer goes to is kept (archived), so the transfer shows it is stalled
+    // instead of losing where it went.
+    let used: Option<bool> = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM transactions WHERE account_id = a.id) OR EXISTS (SELECT 1 FROM recurring WHERE to_account_id = a.id)
+         FROM accounts a WHERE a.id = $1 AND a.budget_id = $2",
+    )
         .bind(id).bind(budget)
         .fetch_optional(db)
         .await?;
@@ -352,6 +371,9 @@ pub struct AccountOperation {
     pub other_amount: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub other_currency: Option<String>,
+    /// The top-level category of an income or expense, to open it for editing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category_id: Option<i64>,
 }
 
 /// The latest operations of one account, newest first.
@@ -363,14 +385,14 @@ pub async fn operations(db: &PgPool, budget: i64, id: i64, limit: i64) -> sqlx::
         "SELECT t.id, t.type, t.amount, t.currency, t.note, t.transaction_date, ", signed!(), ",
                 r.name, r.emoji, CASE WHEN c.parent_id IS NULL THEN NULL ELSE c.name END,
                 COALESCE(u.first_name, u.username, u.login), t.source, t.pair_id,
-                p.account_id, pa.emoji || ' ' || pa.name, p.amount, p.currency
+                p.account_id, pa.emoji || ' ' || pa.name, p.amount, p.currency, r.id
          FROM transactions t
          LEFT JOIN categories c ON c.id = t.category_id
          LEFT JOIN categories r ON r.id = COALESCE(c.parent_id, c.id)
          LEFT JOIN users u ON u.id = t.user_id
          LEFT JOIN transactions p ON p.id = t.pair_id AND t.type = 'transfer'
          LEFT JOIN accounts pa ON pa.id = p.account_id
-         WHERE t.account_id = $1
+         WHERE t.account_id = $1 AND NOT (t.source = 'interest_fixed' AND t.amount = 0)
          ORDER BY t.transaction_date DESC, t.created_at DESC, t.id DESC
          LIMIT $2"
     );
@@ -395,58 +417,10 @@ pub async fn operations(db: &PgPool, budget: i64, id: i64, limit: i64) -> sqlx::
                 other_account: r.get(14),
                 other_amount: r.get(15),
                 other_currency: r.get(16),
+                category_id: r.get(17),
             })
             .collect(),
     ))
-}
-
-/// The savings account a deposit of an older app goes to: the one made from that savings
-/// subcategory, else the first savings account in that currency, else a new «Сбережения».
-pub async fn savings_account_for(db: &PgPool, budget: i64, category: Option<i64>, currency: &str) -> sqlx::Result<i64> {
-    let found: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM accounts WHERE budget_id = $1 AND kind = 'savings' AND currency = $2 AND NOT archived
-         ORDER BY (legacy_category_id IS NOT DISTINCT FROM $3) DESC, position, id LIMIT 1",
-    )
-    .bind(budget).bind(currency).bind(category)
-    .fetch_optional(db)
-    .await?;
-    match found {
-        Some(id) => Ok(id),
-        None => {
-            sqlx::query_scalar(
-                "INSERT INTO accounts (budget_id, name, emoji, currency, kind, position)
-                 VALUES ($1, 'Сбережения', '🎯', $2, 'savings', (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1))
-                 RETURNING id",
-            )
-            .bind(budget).bind(currency)
-            .fetch_one(db)
-            .await
-        }
-    }
-}
-
-/// The everyday account money of that currency comes from: the person's own, else shared, else a new one.
-pub async fn regular_account_for(db: &PgPool, budget: i64, user: i64, currency: &str) -> sqlx::Result<i64> {
-    let found: Option<i64> = sqlx::query_scalar(
-        "SELECT id FROM accounts WHERE budget_id = $1 AND kind = 'regular' AND currency = $2 AND NOT archived
-         ORDER BY (owner_id IS NOT DISTINCT FROM $3) DESC, (owner_id IS NULL) DESC, position, id LIMIT 1",
-    )
-    .bind(budget).bind(currency).bind(user)
-    .fetch_optional(db)
-    .await?;
-    match found {
-        Some(id) => Ok(id),
-        None => {
-            sqlx::query_scalar(
-                "INSERT INTO accounts (budget_id, name, emoji, currency, position)
-                 VALUES ($1, 'Основной ' || $2, '💳', $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1))
-                 RETURNING id",
-            )
-            .bind(budget).bind(currency)
-            .fetch_one(db)
-            .await
-        }
-    }
 }
 
 /// Money put aside in the month (by currency): what moved from everyday accounts into savings

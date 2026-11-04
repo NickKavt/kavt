@@ -17,6 +17,8 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (6, "recurring account", include_str!("../migrations/0006_recurring_account.sql")),
     (7, "savings accounts", include_str!("../migrations/0007_savings_accounts.sql")),
     (8, "currencies", include_str!("../migrations/0008_currencies.sql")),
+    (9, "everyday account by default", include_str!("../migrations/0009_pick_regular.sql")),
+    (10, "term deposit return", include_str!("../migrations/0010_term_return.sql")),
 ];
 
 /// Any number; two servers starting on one database wait for each other on it.

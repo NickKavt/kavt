@@ -2,15 +2,15 @@
 
 A self-hosted family budget. Install it with Docker, open it in a browser and add it to your phone's home screen; it then opens like an app. Your data stays in your own database. It can also open inside Telegram as a Mini App, if you want that.
 
-- Expenses, income and savings by category and subcategory, in several currencies.
+- Expenses and income by category and subcategory, in several currencies. Any operation can be changed or deleted later, from its category, its account or a report.
+- Accounts: cards and cash, each in its own currency, shared or someone's own, with a starting balance. Transfers between accounts, also between currencies at that day's rate.
 - An amount field that adds things up: type `120+45` and `165` is saved.
 - Reports by day, week, month, year or any period.
-- A savings goal and a starting balance.
-- Savings accounts with interest: a flexible account paid monthly or a term deposit paid at maturity. Interest is counted daily, tax is withheld, and the payments are added for you. Rate changes apply from their day.
-- Withdrawals from savings and transfers between accounts; interest follows the money.
-- Recurring operations (rent, subscriptions, salary): weekly, monthly or yearly, added on their day.
-- CSV export of all operations, and CSV import from a bank, Excel, Firefly III, Actual Budget or ezBookkeeping: you pick the columns, missing categories are created, and importing the same file twice adds nothing.
-- Optional exchange rates (off by default, per device): the balance also in roubles, dollars or euros, with rates from the Central Bank of Türkiye, the Bank of Russia or the ECB and a link to compare on Google. Only then does the server contact the chosen source, once an hour at most.
+- Savings accounts with a goal, paid into and out of by transfers from any account.
+- Interest: a flexible account paid monthly or a term deposit paid at maturity. Interest is counted daily and tax is withheld once at payout, as a bank does (in lira the stopaj rate is suggested by the term). A term deposit either renews or, at its end, goes back with its interest to the account you chose; then you can open a new term. Rate changes apply from their day.
+- Recurring operations and transfers (rent, subscriptions, salary, a monthly deposit): weekly, monthly or yearly, added on their day.
+- CSV export of everything (accounts, starting balances, operations, transfers, interest), and CSV import from that export, a bank, Excel, Firefly III, Actual Budget or ezBookkeeping: you pick the columns, missing categories are created, and importing the same file twice adds nothing.
+- Exchange rates for the budget's main currency, on each operation's own day, from the Central Bank of Türkiye, the Bank of Russia, the ECB or currency-api; or off. Only then does the server contact the chosen source.
 - One budget for the family: the owner invites people with a one-time link, as members or admins.
 - Members and admins, plus sessions you can end from the app.
 - Interface in English, Russian and Turkish.
@@ -162,7 +162,7 @@ Or run `docker compose up -d --build` to build the image locally.
 The app is free. If it's useful to you, you can support its development:
 
 - **GitHub Sponsors:** the "Sponsor" button at the top of this page.
-- **TON or USDT on the TON network**, e.g. from Telegram Wallet: `TON_ADDRESS`
+- **TON or USDT on the TON network**, e.g. from Telegram Wallet: `UQDXnKJoI-zeLtZzY64B4Htk9lXPKDdd6GH32hWECSpV66Mn`
 
 The same options are in the app under Settings → Support the author. If you run your own copy, you can change or hide them with the `BUDGET_DONATE_*` settings below.
 

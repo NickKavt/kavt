@@ -55,7 +55,7 @@ export function setMonth(month) {
   return refresh();
 }
 
-/** Adds an expense, income or savings operation. */
+/** Adds an expense or income operation. */
 export async function addOperation({ category, subcategoryId, amount, currency, note, date, accountId }) {
   const body = { amount, currency, note: note || "", transaction_date: date, account_id: accountId ?? null };
   if (category.type === "expense") {
@@ -67,22 +67,14 @@ export async function addOperation({ category, subcategoryId, amount, currency, 
   }
 }
 
-/** Takes money out of savings (the category or one of its accounts) back into the month. */
-export async function withdraw({ category, subcategoryId, amount, currency, note, date, accountId }) {
-  const body = { amount, currency, note: note || "", transaction_date: date, account_id: accountId ?? null };
-  await api(`/api/savings/withdraw?category_id=${subcategoryId ?? category.id}`, { method: "POST", body });
-}
-
-/** Moves money between savings accounts; both halves are created together. */
-export const transfer = ({ fromId, toId, amount, currency, note, date }) =>
-  api("/api/savings/transfer", { method: "POST", body: { from_id: fromId, to_id: toId, amount, currency, note: note || "", transaction_date: date } });
-
 // Accounts: cards and cash (src/accounts.rs).
 export const loadMoneyAccounts = () => api(`/api/accounts?today=${ymd(new Date())}`);
 export const createMoneyAccount = a => api("/api/accounts", { method: "POST", body: a });
 export const updateMoneyAccount = (id, a) => api(`/api/accounts/${id}`, { method: "PATCH", body: a });
 export const deleteMoneyAccount = id => api(`/api/accounts/${id}`, { method: "DELETE" });
 export const loadAccountOperations = id => api(`/api/accounts/${id}/operations`);
+/** A new term of a savings deposit, with money moved in for it if given. */
+export const newTerm = (id, body) => api(`/api/accounts/${id}/term`, { method: "POST", body });
 const transferBody = ({ fromId, toId, amount, toAmount, note, date }) =>
   ({ from_id: fromId, to_id: toId, amount, to_amount: toAmount ?? null, note: note || "", transaction_date: date });
 export const accountTransfer = t => api("/api/accounts/transfers", { method: "POST", body: transferBody(t) });

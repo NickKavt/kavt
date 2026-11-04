@@ -4,7 +4,7 @@ import { html, useEffect, useState } from "../../vendor/preact-htm.js";
 import { t, errorText, locale } from "../i18n.js";
 import { money, usedCurrencies, ymd, parseYmd, today, sameMonth, dayTitle, weekday, monthStart, addMonths } from "../format.js";
 import { useStore, openSheet, toast, state } from "../store.js";
-import { loadDetails, addOperation, refresh, setMonth, withdraw, createRecurring } from "../data.js";
+import { loadDetails, addOperation, refresh, setMonth, createRecurring } from "../data.js";
 import { evalAmount } from "../calc.js";
 import { haptic, tell, tg } from "../tg.js";
 import { back } from "../router.js";
@@ -55,9 +55,6 @@ export function AddForm({ category, details, onSaved, autofocus }) {
   const remembered = lastSub(category.id);
   const [sub, setSub] = useState(subs.some(x => x.id === remembered) ? remembered : null);
   const [busy, setBusy] = useState(false);
-  // Savings can be added to or taken out of.
-  const [mode, setMode] = useState("add");
-  const out = category.type === "savings" && mode === "out";
   // "" or week, month, year: the operation then repeats from its date (src/recurring.rs).
   const [repeat, setRepeat] = useState("");
   // The month on screen changed: a new operation goes to that month by default.
@@ -80,8 +77,8 @@ export function AddForm({ category, details, onSaved, autofocus }) {
     setBusy(true);
     try {
       const op = { category, subcategoryId: sub, amount: value, currency, note: note.trim(), date, accountId: account };
-      if (repeat && !out) await createRecurring({ ...op, categoryId: sub ?? category.id, every: repeat, start: date });
-      else await (out ? withdraw : addOperation)(op);
+      if (repeat) await createRecurring({ ...op, categoryId: sub ?? category.id, every: repeat, start: date });
+      else await addOperation(op);
       haptic("success");
       rememberCurrency(currency);
       rememberAccount(account);
@@ -92,7 +89,7 @@ export function AddForm({ category, details, onSaved, autofocus }) {
       setNote("");
       const d = parseYmd(date);
       const saved = sameMonth(d, s.month) ? t("form.saved") : t("form.savedOn", { date: dayTitle(d) });
-      toast(repeat && !out ? `${saved} · ${t("every." + repeat)}` : saved);
+      toast(repeat ? `${saved} · ${t("every." + repeat)}` : saved);
       setRepeat("");
       await refresh();
       onSaved?.();
@@ -104,18 +101,17 @@ export function AddForm({ category, details, onSaved, autofocus }) {
     }
   };
 
-  const label = category.type === "income" ? t("form.addIncome") : out ? t("form.withdraw") : category.type === "savings" ? t("form.addSavings") : t("form.addExpense");
+  const label = category.type === "income" ? t("form.addIncome") : t("form.addExpense");
   return html`<div class="card form">
-    ${category.type === "savings" && html`<${Seg} options=${[["add", t("form.deposit")], ["out", t("form.withdrawShort")]]} value=${mode} onChange=${setMode} />`}
     ${subs.length > 0 && html`<${Chips}
       items=${[[null, t("form.noSubcategory")], ...subs.map(x => [x.id, x.name])]} value=${sub} onChange=${setSub} />`}
     <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${pickCurrency} autofocus=${autofocus} onEnter=${save} />
     <${AccountPicker} accounts=${accounts} value=${account} onChange=${pickAccount}
-      label=${category.type === "income" ? t("accounts.toAccount") : out ? t("accounts.toAccount") : category.type === "savings" ? t("accounts.fromAccount") : ""} />
+      label=${category.type === "income" ? t("accounts.toAccount") : ""} />
     <input class="field" placeholder=${t("form.note")} value=${note} onInput=${e => setNote(e.currentTarget.value)} maxlength="200" />
     <${DateField} value=${date} onChange=${setDate} />
     <${BeforeStart} accounts=${[accounts.find(a => a.id === account)]} date=${date} />
-    ${!out && html`<label class="date-row repeat-row">
+    ${html`<label class="date-row repeat-row">
       <span class="date-label">🔁 ${t("form.repeat")}</span>
       <select class="field" value=${repeat} onChange=${e => setRepeat(e.currentTarget.value)}>
         <option value="">${t("form.noRepeat")}</option>

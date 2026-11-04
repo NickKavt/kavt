@@ -22,7 +22,11 @@ use sqlx::{Postgres, Row, Transaction};
 use crate::{ApiError, ApiResult, AppRef, check_amount, db, user};
 
 pub const MAX_ROWS: usize = 50_000;
-const COLUMNS: [&str; 8] = ["date", "type", "category", "subcategory", "amount", "currency", "note", "author"];
+const COLUMNS: [&str; 12] = [
+    "date", "type", "category", "subcategory", "amount", "currency", "note", "author", "account", "to_account", "to_amount", "to_currency",
+];
+/// The day an account's starting balance has when it counts from the very beginning.
+const ALL_TIME: &str = "2000-01-01";
 
 /// A text cell. Cells that a spreadsheet would run as a formula get a leading apostrophe.
 fn cell(out: &mut String, text: &str) {
@@ -36,26 +40,33 @@ fn cell(out: &mut String, text: &str) {
     }
 }
 
-/// `type` is expense, income, savings (a deposit), withdrawal (out of savings) or interest.
+/// `type` is expense, income, interest (on a savings account), transfer (`account` →
+/// `to_account`, `to_amount` in `to_currency` arriving) or opening (an account's starting
+/// balance; `category` is its kind, regular or savings, and the date 2000-01-01 means from the
+/// very beginning). Openings come first, so an import makes each account of the right kind.
 pub async fn export(State(state): AppRef, headers: HeaderMap) -> ApiResult<Response> {
     let me = user(&state, &headers).await?;
     let rows = sqlx::query(
-        "SELECT t.transaction_date, t.type, t.source, COALESCE(p.name, c.name), CASE WHEN p.id IS NULL THEN '' ELSE c.name END,
-                t.amount, t.currency, COALESCE(t.note, ''), COALESCE(u.first_name, u.login, u.username, ''), t.id
-         FROM transactions t JOIN categories c ON c.id = t.category_id LEFT JOIN categories p ON p.id = c.parent_id
-         LEFT JOIN users u ON u.id = t.user_id
-         WHERE c.budget_id = $1
+        "SELECT 0 AS ord, COALESCE(a.initial_date, '2000-01-01'), 'opening', NULL::TEXT, a.kind, '',
+                a.initial_amount, a.currency, '', '', a.name, '', NULL::DOUBLE PRECISION, '', a.id
+         FROM accounts a WHERE a.budget_id = $1
          UNION ALL
-         -- Money put into or taken out of a savings account, from the everyday account's side.
-         SELECT t.transaction_date, 'savings', CASE WHEN t.source = 'transfer_in' THEN 'withdrawal' END, 'Сбережения', sa.name,
-                t.amount, t.currency, COALESCE(t.note, ''), COALESCE(u.first_name, u.login, u.username, ''), t.id
+         SELECT 1, t.transaction_date, t.type, t.source, COALESCE(p.name, c.name), CASE WHEN p.id IS NULL THEN '' ELSE c.name END,
+                t.amount, t.currency, COALESCE(t.note, ''), COALESCE(u.first_name, u.login, u.username, ''), COALESCE(a.name, ''), '', NULL, '', t.id
+         FROM transactions t JOIN categories c ON c.id = t.category_id LEFT JOIN categories p ON p.id = c.parent_id
+         LEFT JOIN users u ON u.id = t.user_id LEFT JOIN accounts a ON a.id = t.account_id
+         WHERE c.budget_id = $1 AND NOT (t.source = 'interest_fixed' AND t.amount = 0)
+         UNION ALL
+         -- A transfer once, from the side the money left.
+         SELECT 1, t.transaction_date, 'transfer', NULL, '', '', t.amount, t.currency, COALESCE(t.note, ''),
+                COALESCE(u.first_name, u.login, u.username, ''), a.name, oa.name, o.amount, o.currency, t.id
          FROM transactions t
-         JOIN accounts a ON a.id = t.account_id AND a.kind = 'regular'
+         JOIN accounts a ON a.id = t.account_id
          JOIN transactions o ON o.id = t.pair_id
-         JOIN accounts sa ON sa.id = o.account_id AND sa.kind = 'savings'
+         JOIN accounts oa ON oa.id = o.account_id
          LEFT JOIN users u ON u.id = t.user_id
-         WHERE t.type = 'transfer' AND a.budget_id = $1
-         ORDER BY 1, 10",
+         WHERE t.type = 'transfer' AND t.source = 'transfer_out' AND a.budget_id = $1
+         ORDER BY 1, 2, 15",
     )
     .bind(me.budget_owner_id)
     .fetch_all(&state.db)
@@ -65,27 +76,32 @@ pub async fn export(State(state): AppRef, headers: HeaderMap) -> ApiResult<Respo
     out.push_str(&COLUMNS.join(","));
     out.push('\n');
     for r in rows {
-        let kind: String = r.get(1);
-        let source: Option<String> = r.get(2);
+        let kind: String = r.get(2);
+        let source: Option<String> = r.get(3);
         let kind = match source.as_deref() {
             Some("withdrawal") => "withdrawal",
             Some("interest" | "interest_fixed") => "interest",
             _ => kind.as_str(),
         };
-        let amount: f64 = r.get(5);
-        out.push_str(&r.get::<String, _>(0));
+        out.push_str(&r.get::<String, _>(1));
         out.push(',');
         out.push_str(kind);
-        for i in [3, 4] {
+        for i in [4, 5] {
             out.push(',');
             cell(&mut out, &r.get::<String, _>(i));
         }
         out.push(',');
-        out.push_str(&format!("{amount}"));
-        for i in 6..=8 {
+        out.push_str(&format!("{}", r.get::<f64, _>(6)));
+        for i in 7..=11 {
             out.push(',');
             cell(&mut out, &r.get::<String, _>(i));
         }
+        out.push(',');
+        if let Some(to) = r.get::<Option<f64>, _>(12) {
+            out.push_str(&format!("{to}"));
+        }
+        out.push(',');
+        cell(&mut out, &r.get::<String, _>(13));
         out.push('\n');
     }
     let name = format!("attachment; filename=\"budget-{}.csv\"", Utc::now().date_naive());
@@ -113,6 +129,16 @@ pub struct ImportRow {
     currency: String,
     #[serde(default)]
     note: String,
+    /// The account by name (made when missing); without it each operation goes to the
+    /// everyday account of its currency.
+    #[serde(default)]
+    account: String,
+    /// A transfer's other end, and what arrived there when that is another currency.
+    #[serde(default)]
+    to_account: String,
+    to_amount: Option<f64>,
+    #[serde(default)]
+    to_currency: String,
 }
 
 #[derive(Deserialize)]
@@ -247,6 +273,57 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
     let mut seen: HashMap<String, u32> = HashMap::new();
     for (line, r) in body.rows.iter().enumerate() {
         let bad = |why: &str| ApiError::status(400, &format!("Строка {}: {why}", line + 1));
+        let account_name = clean(&r.account, 60);
+        if r.kind == "opening" || r.kind == "transfer" {
+            let cur = currency(&r.currency);
+            let amount = (r.amount * 100.0).round() / 100.0;
+            if account_name.is_empty() {
+                return Err(bad("нет счёта"));
+            }
+            if r.kind == "opening" {
+                if !(amount.is_finite() && amount.abs() <= 1e12) {
+                    return Err(bad("сумма"));
+                }
+                let kind = if r.category.trim() == "savings" { "savings" } else { "regular" };
+                let id = named_account(&mut cats, &account_name, &cur, kind).await?;
+                let day = r.date.to_string();
+                // Only an account without a starting balance takes it, so a second import changes nothing.
+                let set = sqlx::query("UPDATE accounts SET initial_amount = $2, initial_date = $3 WHERE id = $1 AND initial_amount = 0 AND initial_date IS NULL")
+                    .bind(id).bind(amount).bind((day.as_str() > ALL_TIME).then_some(&day))
+                    .execute(&mut **cats.tx)
+                    .await?
+                    .rows_affected() == 1;
+                if amount != 0.0 {
+                    if set { added += 1 } else { skipped += 1 }
+                }
+                continue;
+            }
+            let to_name = clean(&r.to_account, 60);
+            let to_cur = if r.to_currency.trim().is_empty() { cur.clone() } else { currency(&r.to_currency) };
+            let to_amount = r.to_amount.map_or(amount, |v| (v * 100.0).round() / 100.0);
+            check_amount(amount, &cur).map_err(|_| bad("сумма или валюта"))?;
+            check_amount(to_amount, &to_cur).map_err(|_| bad("сумма или валюта получателя"))?;
+            if to_name.is_empty() {
+                return Err(bad("нет счёта, куда перевод"));
+            }
+            let from = named_account(&mut cats, &account_name, &cur, "regular").await?;
+            let to = named_account(&mut cats, &to_name, &to_cur, "regular").await?;
+            if from == to {
+                return Err(bad("перевод на тот же счёт"));
+            }
+            let note = clean(&r.note, 200);
+            let date = r.date.to_string();
+            let base = format!(
+                "{budget}\u{1f}{date}\u{1f}transfer\u{1f}{}\u{1f}{}\u{1f}{amount}\u{1f}{cur}\u{1f}{to_amount}\u{1f}{to_cur}\u{1f}{note}",
+                account_name.to_lowercase(), to_name.to_lowercase()
+            );
+            let n = seen.entry(base.clone()).or_default();
+            *n += 1;
+            let key = hex::encode(Sha256::digest(format!("{base}\u{1f}{n}").as_bytes()));
+            let fresh = pair(&mut cats, me.id, (from, amount, &cur), (to, to_amount, &to_cur), &note, &date, &key).await?;
+            if fresh { added += 1 } else { skipped += 1 }
+            continue;
+        }
         let (kind, source) = match r.kind.as_str() {
             "expense" => ("expense", None),
             "income" => ("income", None),
@@ -281,7 +358,8 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
             // Savings are accounts: the file's subcategory (or its category, unless that is
             // «Сбережения» itself) names the savings account.
             let name = if !subcategory.is_empty() { subcategory.clone() } else if !category.is_empty() && category.to_lowercase() != root_name.to_lowercase() { category.clone() } else { root_name.clone() };
-            let savings = savings_account(&mut cats, &name, &cur).await?;
+            // This app's own export names the account; older files only the subcategory.
+            let savings = if account_name.is_empty() { savings_account(&mut cats, &name, &cur).await? } else { named_account(&mut cats, &account_name, &cur, "savings").await? };
             let fresh = if r.kind == "interest" {
                 let pct = crate::savings::interest_category(cats.tx, budget).await?;
                 sqlx::query(
@@ -295,33 +373,17 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
             } else {
                 let regular = regular_account(&mut cats, me.id, &cur).await?;
                 let (from, to) = if source == Some("withdrawal") { (savings, regular) } else { (regular, savings) };
-                let out: Option<i64> = sqlx::query_scalar(
-                    "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source, import_key)
-                     VALUES ($1, $2, 'transfer', $3, $4, NULLIF($5, ''), $6, 'transfer_out', $7) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING RETURNING id",
-                )
-                .bind(me.id).bind(from).bind(amount).bind(&cur).bind(&note).bind(&date).bind(&key)
-                .fetch_optional(&mut **cats.tx)
-                .await?;
-                if let Some(out) = out {
-                    let into: i64 = sqlx::query_scalar(
-                        "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source, pair_id)
-                         VALUES ($1, $2, 'transfer', $3, $4, NULLIF($5, ''), $6, 'transfer_in', $7) RETURNING id",
-                    )
-                    .bind(me.id).bind(to).bind(amount).bind(&cur).bind(&note).bind(&date).bind(out)
-                    .fetch_one(&mut **cats.tx)
-                    .await?;
-                    sqlx::query("UPDATE transactions SET pair_id = $2 WHERE id = $1").bind(out).bind(into).execute(&mut **cats.tx).await?;
-                }
-                out.is_some()
+                pair(&mut cats, me.id, (from, amount, &cur), (to, amount, &cur), &note, &date, &key).await?
             };
             if fresh { added += 1 } else { skipped += 1 }
             continue;
         }
+        let account = if account_name.is_empty() { None } else { Some(named_account(&mut cats, &account_name, &cur, "regular").await?) };
         let done = sqlx::query(
-            "INSERT INTO transactions (user_id, category_id, type, amount, currency, note, transaction_date, source, import_key)
-             VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING",
+            "INSERT INTO transactions (user_id, category_id, type, amount, currency, note, transaction_date, source, import_key, account_id)
+             VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING",
         )
-        .bind(me.id).bind(target).bind(kind).bind(amount).bind(&cur).bind(&note).bind(&date).bind(source).bind(key)
+        .bind(me.id).bind(target).bind(kind).bind(amount).bind(&cur).bind(&note).bind(&date).bind(source).bind(key).bind(account)
         .execute(&mut **cats.tx)
         .await?;
         if done.rows_affected() == 1 { added += 1 } else { skipped += 1 }
@@ -344,30 +406,6 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
         });
     }
     Ok(Json(json!({ "added": added, "skipped": skipped, "created": created, "dry_run": body.dry_run })))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn cells_are_quoted_and_defused() {
-        let mut s = String::new();
-        cell(&mut s, "a, \"b\"");
-        assert_eq!(s, "\"a, \"\"b\"\"\"");
-        let mut s = String::new();
-        cell(&mut s, "=HYPERLINK(1)");
-        assert_eq!(s, "'=HYPERLINK(1)");
-        assert_eq!(clean("'=HYPERLINK(1)", 60), "=HYPERLINK(1)");
-        assert_eq!(clean("'quoted", 60), "'quoted");
-    }
-
-    #[test]
-    fn currency_codes() {
-        assert_eq!(currency("usd"), "$");
-        assert_eq!(currency("TRY"), "₺");
-        assert_eq!(currency("GBP"), "GBP");
-    }
 }
 
 /// The savings account of that name and currency, made when the file is the first to name it.
@@ -410,4 +448,70 @@ async fn regular_account(cats: &mut Categories<'_>, user: i64, currency: &str) -
     .bind(cats.budget).bind(currency)
     .fetch_one(&mut **cats.tx)
     .await
+}
+
+/// An account by name and currency, of any kind; a new one of `kind` when there is none.
+async fn named_account(cats: &mut Categories<'_>, name: &str, currency: &str, kind: &str) -> sqlx::Result<i64> {
+    let found: Option<i64> = sqlx::query_scalar(
+        "SELECT id FROM accounts WHERE budget_id = $1 AND currency = $2 AND lower(name) = lower($3) ORDER BY archived, id LIMIT 1",
+    )
+    .bind(cats.budget).bind(currency).bind(name)
+    .fetch_optional(&mut **cats.tx)
+    .await?;
+    if let Some(id) = found {
+        return Ok(id);
+    }
+    sqlx::query_scalar(
+        "INSERT INTO accounts (budget_id, name, emoji, currency, kind, position)
+         VALUES ($1, $2, CASE WHEN $4 = 'savings' THEN '🎯' ELSE '💳' END, $3, $4, (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1))
+         RETURNING id",
+    )
+    .bind(cats.budget).bind(name).bind(currency).bind(kind)
+    .fetch_one(&mut **cats.tx)
+    .await
+}
+
+/// Both halves of a transfer, unless the out half was imported before (`key`); whether it was new.
+async fn pair(cats: &mut Categories<'_>, user: i64, from: (i64, f64, &str), to: (i64, f64, &str), note: &str, date: &str, key: &str) -> sqlx::Result<bool> {
+    let out: Option<i64> = sqlx::query_scalar(
+        "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source, import_key)
+         VALUES ($1, $2, 'transfer', $3, $4, NULLIF($5, ''), $6, 'transfer_out', $7) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING RETURNING id",
+    )
+    .bind(user).bind(from.0).bind(from.1).bind(from.2).bind(note).bind(date).bind(key)
+    .fetch_optional(&mut **cats.tx)
+    .await?;
+    let Some(out) = out else { return Ok(false) };
+    let into: i64 = sqlx::query_scalar(
+        "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source, pair_id)
+         VALUES ($1, $2, 'transfer', $3, $4, NULLIF($5, ''), $6, 'transfer_in', $7) RETURNING id",
+    )
+    .bind(user).bind(to.0).bind(to.1).bind(to.2).bind(note).bind(date).bind(out)
+    .fetch_one(&mut **cats.tx)
+    .await?;
+    sqlx::query("UPDATE transactions SET pair_id = $2 WHERE id = $1").bind(out).bind(into).execute(&mut **cats.tx).await?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cells_are_quoted_and_defused() {
+        let mut s = String::new();
+        cell(&mut s, "a, \"b\"");
+        assert_eq!(s, "\"a, \"\"b\"\"\"");
+        let mut s = String::new();
+        cell(&mut s, "=HYPERLINK(1)");
+        assert_eq!(s, "'=HYPERLINK(1)");
+        assert_eq!(clean("'=HYPERLINK(1)", 60), "=HYPERLINK(1)");
+        assert_eq!(clean("'quoted", 60), "'quoted");
+    }
+
+    #[test]
+    fn currency_codes() {
+        assert_eq!(currency("usd"), "$");
+        assert_eq!(currency("TRY"), "₺");
+        assert_eq!(currency("GBP"), "GBP");
+    }
 }

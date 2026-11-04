@@ -8,7 +8,7 @@ import * as data from "../data.js";
 import { evalAmount } from "../calc.js";
 import { haptic, ask, tell } from "../tg.js";
 import { Sheet, Seg, Chips, MoneyField, Empty, lastCurrency } from "../ui.js";
-import { AccountPicker, activeAccounts } from "./accounts.js";
+import { AccountPicker, activeAccounts, accountForCurrency } from "./accounts.js";
 import { FIELDS, readText, parse, guessColumns, isOwnExport, toRows } from "../csv.js";
 
 export const EVERY = ["week", "month", "year"];
@@ -33,7 +33,7 @@ function RecurringItem({ r, onChanged }) {
   };
   const pickCurrency = c => {
     setCurrency(c);
-    if (accounts.find(x => x.id === account)?.currency !== c) setAccount(accounts.find(x => x.currency === c)?.id ?? null);
+    if (accounts.find(x => x.id === account)?.currency !== c) setAccount(accountForCurrency(state, account, c));
   };
   const title = r.subcategory_name ? `${r.category_name} · ${r.subcategory_name}` : r.category_name;
   const sign = r.type === "expense" ? "−" : "+";
@@ -69,6 +69,7 @@ function RecurringItem({ r, onChanged }) {
       </span>
       <span class=${"op-amount" + (r.type === "expense" ? "" : " op-income")}>${sign}${money(r.amount, r.currency)}</span>
     </button>
+    ${r.stalled && html`<div class="warn small">${t("recurring.stalled")}</div>`}
     ${open && html`<div class="form recurring-edit">
       <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${pickCurrency} onEnter=${save} />
       <${AccountPicker} accounts=${accounts} value=${account} onChange=${pickAccount} />

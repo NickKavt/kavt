@@ -21,6 +21,15 @@ export const activeAccounts = s => (s.home?.accounts || []).filter(a => !a.archi
 export const everydayAccounts = s => activeAccounts(s).filter(a => a.kind !== "savings");
 export const savingsAccounts = s => activeAccounts(s).filter(a => a.kind === "savings");
 const TERMS = [32, 91, 181, 365];
+/**
+ * The tax Türkiye withholds from lira deposit interest (stopaj, 2026): 17.5% up to six months
+ * and on flexible accounts, 15% up to a year, 10% beyond. Other currencies: none suggested.
+ */
+export function suggestedTax(currency, kind, days) {
+  if (currency !== "₺") return null;
+  if (kind !== "term" || !(days > 0) || days <= 182) return 17.5;
+  return days <= 365 ? 15 : 10;
+}
 const decimal = text => Number(String(text).trim().replace(/\s/g, "").replace(",", "."));
 const pctText = v => (v || v === 0 ? String(v).replace(".", ",") : "");
 export const accountLabel = a => `${a.emoji} ${a.name}${a.owner_name ? ` · ${a.owner_name}` : ""}`;
@@ -42,6 +51,16 @@ export function rememberAccount(id) {
 }
 
 /** The account a new operation starts with: the last one used, else the person's own, else shared. */
+/**
+ * The account an operation moves to when its currency is changed by hand: one of the same kind
+ * as the account it was on (an expense stays off savings, interest stays on them).
+ */
+export function accountForCurrency(s, currentId, currency) {
+  const current = activeAccounts(s).find(a => a.id === currentId);
+  const pool = current?.kind === "savings" ? savingsAccounts(s) : everydayAccounts(s);
+  return defaultAccount(pool, currency, s.me?.id)?.id ?? null;
+}
+
 export function defaultAccount(accounts, currency, meId) {
   const last = accounts.find(a => a.id === remembered());
   if (last && (!currency || last.currency === currency)) return last;
@@ -239,8 +258,16 @@ function MoneyAccount({ account, kind: startKind }) {
   const [earns, setEarns] = useState(!!i);
   const [ikind, setIkind] = useState(i?.kind || "flexible");
   const [rate, setRate] = useState(i ? pctText(i.rate) : "");
-  const [tax, setTax] = useState(i?.tax ? pctText(i.tax) : "");
+  const [tax, setTaxText] = useState(i?.tax ? pctText(i.tax) : "");
+  // Typed by hand (or already set): no longer follows the suggestion for the term.
+  const [taxTouched, setTaxTouched] = useState(!!i);
+  const setTax = v => {
+    setTaxTouched(true);
+    setTaxText(v);
+  };
   const [days, setDays] = useState(String(i?.term_days || 32));
+  const [renew, setRenew] = useState(i ? i.renew !== false : true);
+  const [payoutId, setPayoutId] = useState(i?.payout_account_id ?? null);
   const [istart, setIstart] = useState(i?.start || account?.initial_date || ymd(today()));
   const [rateFrom, setRateFrom] = useState(ymd(today()));
   const rateChanged = !!i && (decimal(rate) !== i.rate || (tax.trim() ? decimal(tax) : 0) !== i.tax);
@@ -266,6 +293,13 @@ function MoneyAccount({ account, kind: startKind }) {
   const source = sources.find(a => a.id === sourceId) || defaultAccount(sources, currency, s.me?.id);
   const moving = !editing && origin === "transfer";
   const [triedSource, setTriedSource] = useState(false);
+  const suggested = suggestedTax(currency, ikind, Math.round(decimal(days)));
+  useEffect(() => {
+    if (!taxTouched) setTaxText(suggested == null ? "" : pctText(suggested));
+  }, [suggested, taxTouched]);
+  // Where an ended deposit's money goes: another account of its currency.
+  const payouts = activeAccounts(s).filter(a => a.currency === currency && a.id !== account?.id);
+  const payout = payouts.find(a => a.id === payoutId) || payoutDefault(payouts, s.me?.id);
 
   const body = archived => {
     const v = amount.trim() ? evalAmount(amount) : 0;
@@ -274,7 +308,11 @@ function MoneyAccount({ account, kind: startKind }) {
     let interest = null;
     if (savings && earns) {
       const termDays = Math.round(decimal(days));
-      interest = { kind: ikind, rate: decimal(rate), tax: tax.trim() ? decimal(tax) : 0, term_days: ikind === "term" ? termDays : null, start: istart, rate_from: rateChanged ? rateFrom : null };
+      const ends = ikind === "term" && !renew;
+      interest = {
+        kind: ikind, rate: decimal(rate), tax: tax.trim() ? decimal(tax) : 0, term_days: ikind === "term" ? termDays : null,
+        start: istart, rate_from: rateChanged ? rateFrom : null, renew: !ends, payout_account_id: ends ? payout?.id ?? null : null,
+      };
     }
     return { name: name.trim(), emoji, currency, owner_id: owner, initial_amount: v, initial_date: from || null, archived, kind, target_amount: savings && goal > 0 ? goal : null, interest };
   };
@@ -374,7 +412,13 @@ function MoneyAccount({ account, kind: startKind }) {
             <span class="muted">${t("acc.days")}</span>
             <input class="field" inputmode="numeric" value=${days} onInput=${e => setDays(e.currentTarget.value)} />
           </label>
-          <${Chips} items=${TERMS.map(n => [String(n), t("acc.daysShort", { n })])} value=${days} onChange=${setDays} />`}
+          <${Chips} items=${TERMS.map(n => [String(n), t("acc.daysShort", { n })])} value=${days} onChange=${setDays} />
+          <${Seg} options=${[[true, t("acc.renew")], [false, t("acc.noRenew")]]} value=${renew} onChange=${setRenew} />
+          <div class="muted small">${renew ? t("acc.renewHint") : t("acc.noRenewHint")}</div>
+          ${!renew && (payouts.length
+            ? html`<${AccountSelect} accounts=${payouts} value=${payout?.id} onChange=${setPayoutId} />`
+            : html`<div class="warn small">${t("acc.noPayout")}</div>`)}`}
+          ${suggested != null && html`<div class="muted small">${t("acc.taxHint")}</div>`}
           <label class="date-row">
             <span class="date-label">${t("acc.start")}</span>
             <input type="date" class="field date-input" value=${istart} max=${ymd(today())} onChange=${e => e.currentTarget.value && setIstart(e.currentTarget.value)} />
@@ -400,6 +444,12 @@ function AccountView({ id }) {
   const reload = () => data.loadAccountOperations(id).then(setOps).catch(e => toast(errorText(e), "error"));
   useEffect(() => { reload(); }, [id, s.home]);
   if (!a) return html`<${Sheet} title=${t("accounts.title")}><${Empty}>${t("common.loading")}<//><//>`;
+  // Any operation opens for changing or deleting; afterwards the account is shown again.
+  const open = op => {
+    haptic();
+    if (op.type === "transfer") return openSheet("moneyTransfer", { op, accountId: a.id });
+    if (op.category_id) openSheet("editOperation", { op: { ...op, account_id: a.id }, categoryId: op.category_id, back: { kind: "accountView", props: { id: a.id } } });
+  };
   return html`<${Sheet} title=${`${a.emoji} ${a.name}`}>
     <div class="account-balance">
       <div class="muted small">${[a.owner_name || t("accounts.shared"), a.archived ? t("accounts.archived") : ""].filter(Boolean).join(" · ")}</div>
@@ -414,12 +464,17 @@ function AccountView({ id }) {
     </div>`}
     ${a.interest && html`<div class="card interest-card">
       <div class="in-main-row"><span>${a.interest.kind === "term" ? t("acc.term") : t("acc.flexible")}</span><b>${pctText(a.interest.rate)}%${a.interest.tax ? html`<span class="muted small"> · ${t("acc.tax")} ${pctText(a.interest.tax)}%</span>` : ""}</b></div>
-      <div class="in-main-row"><span class="muted">${t("savings.accrued")}</span><span>${money(a.interest.accrued, a.currency)}</span></div>
-      <div class="in-main-row"><span class="muted">${t("savings.nextPayout", { date: dayTitle(parseYmd(a.interest.next_payout_date)) })}</span><span>${money(a.interest.next_payout, a.currency)}</span></div>
+      ${a.interest.ended
+        ? html`<div class="in-main-row"><span class="muted">${t("acc.ended", { date: dayTitle(parseYmd(a.interest.ended)) })}</span><span>${payoutName(s, a.interest.payout_account_id)}</span></div>`
+        : html`<div class="in-main-row"><span class="muted">${t("savings.accrued")}</span><span>${money(a.interest.accrued, a.currency)}</span></div>
+          <div class="in-main-row"><span class="muted">${t("savings.nextPayout", { date: dayTitle(parseYmd(a.interest.next_payout_date)) })}</span><span>${money(a.interest.next_payout, a.currency)}</span></div>
+          ${a.interest.next_tax > 0 && html`<div class="in-main-row small"><span class="muted">${t("acc.grossTax")}</span><span class="muted">${money(a.interest.next_gross, a.currency)} − ${money(a.interest.next_tax, a.currency)}</span></div>`}
+          ${a.interest.kind === "term" && html`<div class="muted small">${a.interest.renew ? t("acc.renewsShort") : t("acc.returnsTo", { name: payoutName(s, a.interest.payout_account_id) })}</div>`}`}
       <div class="in-main-row"><span class="muted">${t("savings.paidTotal")}</span><span>${money(a.interest.interest_paid, a.currency)}</span></div>
       <div class="in-main-row"><span class="muted">${t("savings.yearForecast")}</span><span>${money(a.interest.year_forecast, a.currency)}</span></div>
     </div>`}
     <div class="chips">
+      ${a.interest?.ended && html`<button type="button" class="chip active" onClick=${() => openSheet("newTerm", { id: a.id })}>↻ ${t("acc.newTerm")}</button>`}
       ${a.kind === "savings" && html`<button type="button" class="chip" onClick=${() => openSheet("moneyTransfer", { toId: a.id })}>＋ ${t("savings.putAside")}</button>`}
       <button type="button" class="chip" onClick=${() => openSheet("moneyTransfer", { fromId: a.id })}>⇄ ${t("accounts.transfer")}</button>
       <button type="button" class="chip" onClick=${() => openSheet("moneyAccount", { account: a })}>✎ ${t("accounts.edit")}</button>
@@ -436,7 +491,7 @@ function AccountView({ id }) {
           ? (op.signed < 0 ? `1 ${op.currency} = ${rateText(op.other_amount / op.amount)} ${op.other_currency}` : `1 ${op.other_currency} = ${rateText(op.amount / op.other_amount)} ${op.currency}`)
           : "";
         const note = [dayTitle(parseYmd(op.transaction_date)), op.note, other && (op.signed < 0 ? `→ ${other}` : `← ${other}`), rateOf].filter(Boolean).join(" · ");
-        return html`<button type="button" class="op" onClick=${() => transfer && openSheet("moneyTransfer", { op, accountId: a.id })}>
+        return html`<button type="button" class="op" onClick=${() => open(op)}>
           <span class="op-main">
             <span class="op-title">${title}</span>
             <span class="op-note">${note}</span>
@@ -446,6 +501,81 @@ function AccountView({ id }) {
         </button>`;
       })}
     </div>`}
+  <//>`;
+}
+
+/** Where a deposit's money goes back to by default: a shared everyday account, else one's own, else any. */
+const payoutDefault = (list, meId) => {
+  const everyday = list.filter(a => a.kind !== "savings");
+  return everyday.find(a => a.owner_id == null) || everyday.find(a => a.owner_id === meId) || everyday[0] || list[0] || null;
+};
+
+/** The name of a deposit's payout account, or a dash when there is none. */
+const payoutName = (s, id) => {
+  const p = (s.home?.accounts || []).find(x => x.id === id);
+  return p ? `${p.emoji} ${p.name}` : "—";
+};
+
+/**
+ * A new term of a deposit that doesn't renew: its day, days, rate and tax (the last term's by
+ * default), and the money put in, moved from another account on that day.
+ */
+function NewTerm({ id }) {
+  const s = useStore();
+  const a = (s.home?.accounts || []).find(x => x.id === id);
+  const i = a?.interest;
+  const [start, setStart] = useState(ymd(today()));
+  const [days, setDays] = useState(String(i?.term_days || 32));
+  const [rate, setRate] = useState(i ? pctText(i.rate) : "");
+  const [tax, setTax] = useState(i ? pctText(i.tax) : "");
+  const sources = activeAccounts(s).filter(x => x.currency === a?.currency && x.id !== id);
+  const [fromId, setFromId] = useState(i?.payout_account_id ?? null);
+  const from = sources.find(x => x.id === fromId) || payoutDefault(sources, s.me?.id);
+  const [amount, setAmount] = useState("");
+  if (!a || !i) return html`<${Sheet} title=${t("acc.newTerm")}><${Empty}>${t("common.loading")}<//><//>`;
+  const save = async () => {
+    const termDays = Math.round(decimal(days));
+    if (!(termDays >= 1)) return tell(t("acc.enterDays"));
+    if (!(decimal(rate) >= 0)) return tell(t("acc.enterRate"));
+    const v = amount.trim() ? evalAmount(amount) : 0;
+    if (!Number.isFinite(v) || v < 0) return tell(t("form.enterAmount"));
+    const body = {
+      interest: { kind: "term", rate: decimal(rate), tax: tax.trim() ? decimal(tax) : 0, term_days: termDays, start, renew: false, payout_account_id: i.payout_account_id ?? null },
+      from_id: v > 0 ? from?.id ?? null : null,
+      amount: v > 0 ? v : null,
+    };
+    if (await attempt(() => data.newTerm(id, body), t("acc.saved"))) {
+      openSheet("accountView", { id });
+      data.refresh();
+    }
+  };
+  return html`<${Sheet} title=${`${a.emoji} ${a.name} · ${t("acc.newTerm")}`}>
+    <div class="form">
+      <div class="muted small">${t("acc.newTermHint", { sum: money(a.balance, a.currency) })}</div>
+      <label class="date-row">
+        <span class="date-label">${t("acc.start")}</span>
+        <input type="date" class="field date-input" value=${start} max=${ymd(today())} onChange=${e => e.currentTarget.value && setStart(e.currentTarget.value)} />
+      </label>
+      <label class="acc-field">
+        <span class="muted">${t("acc.days")}</span>
+        <input class="field" inputmode="numeric" value=${days} onInput=${e => setDays(e.currentTarget.value)} />
+      </label>
+      <${Chips} items=${TERMS.map(n => [String(n), t("acc.daysShort", { n })])} value=${days} onChange=${setDays} />
+      <div class="acc-fields">
+        <label class="acc-field">
+          <span class="muted">${t("acc.rate")}</span>
+          <span class="acc-input"><input class="field" inputmode="decimal" value=${rate} onInput=${e => setRate(e.currentTarget.value)} placeholder="45" /><span>%</span></span>
+        </label>
+        <label class="acc-field">
+          <span class="muted">${t("acc.tax")}</span>
+          <span class="acc-input"><input class="field" inputmode="decimal" value=${tax} onInput=${e => setTax(e.currentTarget.value)} placeholder="0" /><span>%</span></span>
+        </label>
+      </div>
+      <div class="muted small">${t("acc.newTermMoney")}</div>
+      ${sources.length > 0 && html`<${AccountSelect} accounts=${sources} value=${from?.id} onChange=${setFromId} />`}
+      <${MoneyField} value=${amount} onInput=${setAmount} currency=${a.currency} onCurrency=${() => {}} locked onEnter=${save} />
+      <button type="button" class="btn btn-primary" onClick=${save}>${t("acc.openTerm")}</button>
+    </div>
   <//>`;
 }
 
@@ -467,6 +597,8 @@ function MoneyTransfer({ fromId, toId, toSavings, op, accountId }) {
   const all = s.home?.accounts || [];
   // Editing: this account's half and the other one, whichever went out.
   const out = op ? op.signed < 0 : true;
+  // Opened from an account's operations: back to that account afterwards.
+  const done = () => (accountId != null ? openSheet("accountView", { id: accountId }) : closeSheet());
   const lastFrom = (() => {
     try {
       return Number(localStorage.getItem(FROM_KEY)) || null;
@@ -570,14 +702,14 @@ function MoneyTransfer({ fromId, toId, toSavings, op, accountId }) {
       try {
         localStorage.setItem(FROM_KEY, String(from));
       } catch {}
-      closeSheet();
+      done();
       data.refresh();
     }
   };
   const remove = async () => {
     if (!(await ask(t("accounts.confirmDeleteTransfer")))) return;
     if (await attempt(() => data.deleteAccountTransfer(op.id), t("op.deleted"))) {
-      closeSheet();
+      done();
       data.refresh();
     }
   };
@@ -618,4 +750,4 @@ function MoneyTransfer({ fromId, toId, toSavings, op, accountId }) {
   <//>`;
 }
 
-export const ACCOUNT_SHEETS = { savingsGoal: SavingsGoalSheet, moneyAccounts: MoneyAccounts, moneyAccount: MoneyAccount, accountView: AccountView, moneyTransfer: MoneyTransfer };
+export const ACCOUNT_SHEETS = { savingsGoal: SavingsGoalSheet, moneyAccounts: MoneyAccounts, moneyAccount: MoneyAccount, accountView: AccountView, moneyTransfer: MoneyTransfer, newTerm: NewTerm };

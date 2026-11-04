@@ -61,8 +61,8 @@ pub struct Config {
 
 /// Where the author of the app takes donations. An installation shows them in Settings unless
 /// its own `BUDGET_DONATE_*` settings change them; set to empty, a way is hidden.
-const DONATE_TON: &str = "";
-const DONATE_GITHUB: &str = "";
+const DONATE_TON: &str = "UQDXnKJoI-zeLtZzY64B4Htk9lXPKDdd6GH32hWECSpV66Mn";
+const DONATE_GITHUB: &str = "NickKavt";
 const DONATE_URL: &str = "";
 
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T {
@@ -357,16 +357,17 @@ async fn home(State(state): AppRef, headers: HeaderMap, Query(q): Query<MonthQue
     let me = user(&state, &headers).await?;
     let budget = me.budget_owner_id;
     let month = q.bounds();
-    // Recurring operations and interest due are in before the month's totals are counted.
+    // Recurring operations and interest due are in before the month's totals are counted;
+    // listing the accounts brings their interest up to date (once).
     recurring::sync_budget(&state.db, budget).await?;
-    savings::sync_budget(&state.db, budget).await?;
+    let accounts = accounts::list(&state.db, budget, q.today).await?;
     Ok(Json(json!({
         "categories": db::list_categories(&state.db, budget, Some(&month)).await?,
         "chart": db::stats_by_category(&state.db, budget, &month).await?,
         "month_summary": db::month_summary(&state.db, budget, &month).await?,
         "savings_summary": db::savings_summary(&state.db, budget, &month.1).await?,
         "settings": rates::settings(&state.db, budget).await?,
-        "accounts": accounts::list(&state.db, budget, q.today).await?,
+        "accounts": accounts,
     })))
 }
 
@@ -567,89 +568,11 @@ async fn delete_subcategory(State(state): AppRef, headers: HeaderMap, Path(id): 
 // Savings from older apps. Savings are accounts now (src/accounts.rs); a deposit, withdrawal
 // or transfer an older app sends for a savings category becomes a transfer between accounts.
 // ---------------------------------------------------------------------------
-fn transfer_error(m: &'static str) -> ApiError {
-    ApiError::status(400, m)
-}
-
-/// A savings category of the budget sent by an older app, if any.
-async fn savings_category(state: &AppState, budget: i64, id: Option<i64>) -> ApiResult<Option<i64>> {
-    let Some(id) = id else { return Ok(None) };
-    let fits: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM categories WHERE id = $1 AND budget_id = $2 AND type = 'savings')")
-        .bind(id).bind(budget)
-        .fetch_one(&state.db)
-        .await?;
-    if fits { Ok(Some(id)) } else { Err(not_found_category()) }
-}
-
-/// Money taken out of savings into an everyday account.
-async fn withdraw(State(state): AppRef, headers: HeaderMap, Query(q): Query<CategoryIdQuery>, Json(t): Json<IncomeCreate>) -> ApiResult<Json<serde_json::Value>> {
-    let me = user(&state, &headers).await?;
-    let budget = me.budget_owner_id;
-    check_amount(t.amount, &t.currency)?;
-    let currency = rates::symbol(&t.currency).to_string();
-    let category = savings_category(&state, budget, q.category_id).await?;
-    let from = accounts::savings_account_for(&state.db, budget, category, &currency).await?;
-    let to = match t.account_id {
-        Some(id) => {
-            check_account_for(&state, budget, Some(id), &currency).await?;
-            id
-        }
-        None => accounts::regular_account_for(&state.db, budget, me.id, &currency).await?,
-    };
-    let body = accounts::TransferIn { from_id: from, to_id: to, amount: t.amount, to_amount: None, note: t.note, transaction_date: t.transaction_date };
-    let (out, into) = accounts::transfer(&state.db, budget, me.id, &body).await?.map_err(transfer_error)?;
-    Ok(Json(json!({ "id": out, "to": into })))
-}
-
-#[derive(Deserialize)]
-struct TransferIn {
-    from_id: i64,
-    to_id: i64,
-    amount: f64,
-    currency: String,
-    note: Option<String>,
-    transaction_date: Option<NaiveDate>,
-}
-
-/// Between two savings categories of an older app: between their savings accounts.
-async fn transfer(State(state): AppRef, headers: HeaderMap, Json(t): Json<TransferIn>) -> ApiResult<Json<serde_json::Value>> {
-    let me = user(&state, &headers).await?;
-    let budget = me.budget_owner_id;
-    check_amount(t.amount, &t.currency)?;
-    let currency = rates::symbol(&t.currency).to_string();
-    let from = accounts::savings_account_for(&state.db, budget, savings_category(&state, budget, Some(t.from_id)).await?, &currency).await?;
-    let to = accounts::savings_account_for(&state.db, budget, savings_category(&state, budget, Some(t.to_id)).await?, &currency).await?;
-    let body = accounts::TransferIn { from_id: from, to_id: to, amount: t.amount, to_amount: None, note: t.note, transaction_date: t.transaction_date };
-    let (out, into) = accounts::transfer(&state.db, budget, me.id, &body).await?.map_err(transfer_error)?;
-    Ok(Json(json!({ "from": out, "to": into })))
-}
-
-/// A deposit into savings from an older app: a transfer from an everyday account into the
-/// savings account; its «Первоначальная сумма…» becomes the savings account's starting balance.
-async fn create_savings(State(state): AppRef, headers: HeaderMap, Query(q): Query<CategoryIdQuery>, Json(t): Json<IncomeCreate>) -> ApiResult<Json<serde_json::Value>> {
-    let me = user(&state, &headers).await?;
-    let budget = me.budget_owner_id;
-    check_amount(t.amount, &t.currency)?;
-    let currency = rates::symbol(&t.currency).to_string();
-    let category = savings_category(&state, budget, q.category_id).await?;
-    let savings = accounts::savings_account_for(&state.db, budget, category, &currency).await?;
-    if t.note.as_deref().unwrap_or("").starts_with("Первоначальная сумма") {
-        sqlx::query("UPDATE accounts SET initial_amount = $2, initial_date = $3 WHERE id = $1")
-            .bind(savings).bind(t.amount).bind(t.transaction_date.map(|d| d.to_string()))
-            .execute(&state.db)
-            .await?;
-        return Ok(Json(json!({ "id": savings, "ok": true })));
-    }
-    let from = match t.account_id {
-        Some(id) => {
-            check_account_for(&state, budget, Some(id), &currency).await?;
-            id
-        }
-        None => accounts::regular_account_for(&state.db, budget, me.id, &currency).await?,
-    };
-    let body = accounts::TransferIn { from_id: from, to_id: savings, amount: t.amount, to_amount: None, note: t.note, transaction_date: t.transaction_date };
-    let (out, _) = accounts::transfer(&state.db, budget, me.id, &body).await?.map_err(transfer_error)?;
-    Ok(Json(json!({ "id": out, "ok": true })))
+/// Savings of older apps (deposits, withdrawals, moves between savings categories). Savings
+/// are accounts now and are paid into and out of by transfers (/api/accounts/transfers); the
+/// old calls could take out more than there was, so they are refused.
+async fn savings_gone() -> ApiError {
+    ApiError::status(410, "Сбережения теперь — счета. Обновите приложение")
 }
 
 #[derive(Deserialize)]
@@ -735,6 +658,43 @@ async fn create_money_account(State(state): AppRef, headers: HeaderMap, Json(a):
 async fn update_money_account(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64>, Json(a): Json<accounts::AccountIn>) -> ApiResult<Json<serde_json::Value>> {
     let me = user(&state, &headers).await?;
     accounts::update(&state.db, me.budget_owner_id, id, &a).await?.map_err(account_problem)?;
+    Ok(ok())
+}
+
+#[derive(Deserialize)]
+struct NewTermIn {
+    interest: savings::AccountIn,
+    /// Money put in for the new term, by a transfer on its first day.
+    from_id: Option<i64>,
+    amount: Option<f64>,
+}
+
+/// A new term of a savings deposit, optionally with money moved in for it.
+async fn new_term(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64>, Json(t): Json<NewTermIn>) -> ApiResult<Json<serde_json::Value>> {
+    let me = user(&state, &headers).await?;
+    let budget = me.budget_owner_id;
+    let savings: Option<bool> = sqlx::query_scalar("SELECT kind = 'savings' FROM accounts WHERE id = $1 AND budget_id = $2")
+        .bind(id).bind(budget)
+        .fetch_optional(&state.db)
+        .await?;
+    match savings {
+        None => return Err(account_problem(accounts::Problem::NotFound)),
+        Some(false) => return Err(account_problem(accounts::Problem::Kind)),
+        Some(true) => {}
+    }
+    t.interest.check().map_err(|m| ApiError::status(400, m))?;
+    if let (Some(from), Some(amount)) = (t.from_id, t.amount) {
+        // Checked before anything changes; made after, so the new term counts it.
+        if accounts::currency_of(&state.db, budget, from).await? != accounts::currency_of(&state.db, budget, id).await? {
+            return Err(ApiError::status(400, "Счёт пополнения — в другой валюте"));
+        }
+        check_amount(amount, "₺")?;
+    }
+    savings::new_term(&state.db, id, &t.interest).await?;
+    if let (Some(from), Some(amount)) = (t.from_id, t.amount) {
+        let body = accounts::TransferIn { from_id: from, to_id: id, amount, to_amount: None, note: None, transaction_date: Some(t.interest.start) };
+        accounts::transfer(&state.db, budget, me.id, &body).await?.map_err(|m| ApiError::status(400, m))?;
+    }
     Ok(ok())
 }
 
@@ -856,11 +816,10 @@ async fn create_expense(State(state): AppRef, headers: HeaderMap, Path(category)
     if db::category_row(&state.db, budget, category).await?.is_none() {
         return Err(not_found_category());
     }
-    if let Some(sub) = t.subcategory_id {
-        if db::subcategory(&state.db, budget, sub).await?.is_none() {
+    if let Some(sub) = t.subcategory_id
+        && db::subcategory(&state.db, budget, sub).await?.is_none() {
             return Err(ApiError::status(404, "Подкатегория не найдена"));
         }
-    }
     let target = t.subcategory_id.unwrap_or(category);
     check_account_for(&state, budget, t.account_id, &t.currency).await?;
     insert_transaction(&state.db, me.id, Some(target), "expense", t.amount, &t.currency, t.note.as_deref(), t.is_debt.unwrap_or(false), t.transaction_date, t.account_id).await
@@ -958,6 +917,18 @@ async fn update_transaction(
 /// Members of a budget can delete each other's operations, but not other budgets'.
 async fn delete_transaction(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
     let me = user(&state, &headers).await?;
+    // Interest the server pays would be paid again on its next count: deleting it keeps an
+    // empty corrected payment instead, so that day pays nothing.
+    let skipped = sqlx::query(
+        "UPDATE transactions t SET amount = 0, source = 'interest_fixed' FROM categories c
+         WHERE c.id = t.category_id AND c.budget_id = $2 AND t.id = $1 AND t.source IN ('interest', 'interest_fixed')",
+    )
+    .bind(id).bind(me.budget_owner_id)
+    .execute(&state.db)
+    .await?;
+    if skipped.rows_affected() > 0 {
+        return Ok(ok());
+    }
     // The other half of a transfer goes with it.
     let done = sqlx::query(
         "DELETE FROM transactions t USING categories c
@@ -1290,16 +1261,17 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/categories/{category_id}/subcategories", post(create_subcategory))
         .route("/api/categories/{category_id}/expenses", post(create_expense))
         .route("/api/income", post(create_income))
-        .route("/api/savings", post(create_savings))
+        .route("/api/savings", post(savings_gone))
         .route("/api/transactions/{transaction_id}", delete(delete_transaction).patch(update_transaction))
-        .route("/api/savings/withdraw", post(withdraw))
-        .route("/api/savings/transfer", post(transfer))
+        .route("/api/savings/withdraw", post(savings_gone))
+        .route("/api/savings/transfer", post(savings_gone))
         .route("/api/recurring", post(recurring::create))
         .route("/api/settings", axum::routing::put(put_settings))
         .route("/api/settings/goal", axum::routing::put(put_goal))
         .route("/api/me/prefs", axum::routing::put(put_prefs))
         .route("/api/accounts", post(create_money_account))
         .route("/api/accounts/{account_id}", patch(update_money_account).delete(delete_money_account))
+        .route("/api/accounts/{account_id}/term", post(new_term))
         .route("/api/accounts/transfers", post(account_transfer))
         .route("/api/accounts/transfers/{transfer_id}", patch(update_account_transfer).delete(delete_account_transfer))
         .route("/api/recurring/{recurring_id}", patch(recurring::update).delete(recurring::stop))

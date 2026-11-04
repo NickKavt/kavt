@@ -51,11 +51,10 @@ pub const FALLBACK: &str = "fawaz";
 
 impl Cache {
     pub async fn get(&self, source: &'static str) -> Result<Rates, String> {
-        if let Some((at, r)) = self.0.lock().unwrap().get(source) {
-            if at.elapsed() < KEEP {
+        if let Some((at, r)) = self.0.lock().unwrap().get(source)
+            && at.elapsed() < KEEP {
                 return Ok(r.clone());
             }
-        }
         match fetch(source).await {
             Ok(r) => {
                 self.0.lock().unwrap().insert(source, (Instant::now(), r.clone()));
@@ -269,14 +268,13 @@ pub async fn fill(db: &PgPool, budget: Option<i64>) -> sqlx::Result<usize> {
                 let mut rate = convert(&r, &currency, &main);
                 let mut r = r;
                 // The chosen source doesn't list this currency: ask the one that lists them all.
-                if rate.is_none() && source != FALLBACK {
-                    if let Ok(f) = on_day(db, FALLBACK, day).await {
+                if rate.is_none() && source != FALLBACK
+                    && let Ok(f) = on_day(db, FALLBACK, day).await {
                         rate = convert(&f, &currency, &main);
                         if rate.is_some() {
                             r = f;
                         }
                     }
-                }
                 let source = r.source;
                 // Only if the operation still has the day and currency the rate was found for:
                 // it may have been changed meanwhile, and then it waits for its own lookup.
@@ -378,11 +376,10 @@ fn parse_ecb(json: &str) -> Option<Rates> {
     let try_per_eur = rates.get("TRY")?.as_f64()?;
     let mut in_try = HashMap::from([("₺".to_string(), 1.0), ("€".to_string(), try_per_eur)]);
     for (code, per_eur) in rates {
-        if let Some(x) = per_eur.as_f64().filter(|x| *x > 0.0) {
-            if code != "TRY" {
+        if let Some(x) = per_eur.as_f64().filter(|x| *x > 0.0)
+            && code != "TRY" {
                 in_try.insert(app_id(code), try_per_eur / x);
             }
-        }
     }
     Some(Rates { source: "ecb", date, in_try, stale: false })
 }
@@ -395,13 +392,24 @@ fn parse_fawaz(json: &str) -> Option<Rates> {
     let mut in_try = HashMap::from([("₺".to_string(), 1.0)]);
     for (code, x) in per_try {
         // ISO codes only: the file also lists crypto and metals under longer names.
-        if code.len() == 3 && code.chars().all(|c| c.is_ascii_alphabetic()) && code != "try" {
-            if let Some(x) = x.as_f64().filter(|x| x.is_finite() && *x > 0.0) {
+        if code.len() == 3 && code.chars().all(|c| c.is_ascii_alphabetic()) && code != "try"
+            && let Some(x) = x.as_f64().filter(|x| x.is_finite() && *x > 0.0) {
                 in_try.insert(app_id(code), 1.0 / x);
             }
-        }
     }
     (in_try.len() > 1).then_some(Rates { source: "fawaz", date, in_try, stale: false })
+}
+
+/// The budget's savings goal; `None` or 0 removes it.
+pub async fn save_goal(db: &PgPool, budget: i64, goal: Option<f64>) -> sqlx::Result<()> {
+    sqlx::query(
+        "INSERT INTO budget_settings (budget_id, savings_goal) VALUES ($1, $2)
+         ON CONFLICT (budget_id) DO UPDATE SET savings_goal = $2",
+    )
+    .bind(budget).bind(goal.filter(|g| *g > 0.0))
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -438,16 +446,4 @@ mod tests {
         assert!((r.in_try["$"] - 50.0).abs() < 1e-9);
         assert!(!r.in_try.contains_key("₽"));
     }
-}
-
-/// The budget's savings goal; `None` or 0 removes it.
-pub async fn save_goal(db: &PgPool, budget: i64, goal: Option<f64>) -> sqlx::Result<()> {
-    sqlx::query(
-        "INSERT INTO budget_settings (budget_id, savings_goal) VALUES ($1, $2)
-         ON CONFLICT (budget_id) DO UPDATE SET savings_goal = $2",
-    )
-    .bind(budget).bind(goal.filter(|g| *g > 0.0))
-    .execute(db)
-    .await?;
-    Ok(())
 }

@@ -115,7 +115,9 @@ export function dateReader(values) {
 const SYMBOLS = { TRY: "₺", TL: "₺", USD: "$", EUR: "€", RUB: "₽", RUR: "₽", "РУБ": "₽" };
 const symbol = c => SYMBOLS[c.toUpperCase()] || c;
 
-const OWN_TYPES = new Set(["expense", "income", "savings", "withdrawal", "interest"]);
+const OWN_TYPES = new Set(["expense", "income", "savings", "withdrawal", "interest", "transfer", "opening"]);
+// Columns only this app's export has: accounts, and a transfer's other end.
+const OWN_EXTRA = ["account", "to_account", "to_amount", "to_currency"];
 const EXPENSE = new Set(["expense", "withdrawal", "расход", "расходы", "gider", "списание", "payment"]);
 const INCOME = new Set(["income", "deposit", "доход", "доходы", "gelir", "зачисление", "пополнение"]);
 // Moves between one's own accounts and balance corrections aren't spending or income here.
@@ -130,6 +132,11 @@ export function toRows(lines, cols, { own, currency, bySign }) {
   const body = lines.slice(1);
   const readDate = dateReader(cols.date >= 0 ? body.map(l => l[cols.date]) : []);
   const get = (l, f) => (cols[f] >= 0 ? String(l[cols[f]] ?? "").trim() : "");
+  const header = lines[0].map(h => String(h).trim().toLowerCase());
+  const extra = (l, f) => {
+    const i = own ? header.indexOf(f) : -1;
+    return i >= 0 ? String(l[i] ?? "").trim() : "";
+  };
   const rows = [], errors = [];
   let skipped = 0;
   body.forEach((l, i) => {
@@ -137,19 +144,27 @@ export function toRows(lines, cols, { own, currency, bySign }) {
     const date = readDate(get(l, "date"));
     const amount = parseAmount(get(l, "amount"));
     if (!date) return errors.push({ line, field: "date", value: get(l, "date") });
-    if (!Number.isFinite(amount) || amount === 0) return errors.push({ line, field: "amount", value: get(l, "amount") });
     const rawType = get(l, "type").toLowerCase();
+    // An account's starting balance may be nothing, or below zero (a card in debt).
+    const opening = own && rawType === "opening";
+    if (!Number.isFinite(amount) || (amount === 0 && !opening)) return errors.push({ line, field: "amount", value: get(l, "amount") });
     let type;
     if (own && OWN_TYPES.has(rawType)) type = rawType;
     else if (SKIP.has(rawType)) return skipped++;
     else if (EXPENSE.has(rawType)) type = "expense";
     else if (INCOME.has(rawType)) type = "income";
     else type = bySign && amount > 0 ? "income" : "expense";
-    rows.push({
-      date, type, amount: Math.abs(amount),
+    const row = {
+      date, type, amount: opening ? amount : Math.abs(amount),
       category: get(l, "category"), subcategory: get(l, "subcategory"),
       currency: symbol(get(l, "currency")) || currency, note: get(l, "note"),
-    });
+    };
+    if (own) {
+      for (const f of OWN_EXTRA) row[f] = extra(l, f);
+      row.to_amount = row.to_amount ? parseAmount(row.to_amount) : null;
+      if (row.to_currency) row.to_currency = symbol(row.to_currency);
+    }
+    rows.push(row);
   });
   return { rows, errors, skipped };
 }

@@ -50,6 +50,16 @@ async fn sync(db: &PgPool, budget: Option<i64>) -> sqlx::Result<()> {
     Ok(())
 }
 
+/// Whether a recurring row `r` is a transfer `catch_up` can't make (the same conditions).
+macro_rules! STALLED {
+    () => {
+        "(r.type = 'transfer' AND (
+            NOT EXISTS (SELECT 1 FROM accounts x WHERE x.id = r.to_account_id AND x.currency = r.currency AND NOT x.archived)
+            OR (r.account_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM accounts x WHERE x.id = r.account_id AND x.currency = r.currency AND NOT x.archived))
+            OR (r.account_id IS NULL AND NOT EXISTS (SELECT 1 FROM accounts x WHERE x.budget_id = r.budget_id AND x.kind = 'regular' AND x.currency = r.currency AND NOT x.archived))))"
+    };
+}
+
 async fn catch_up(db: &PgPool, id: i64, today: NaiveDate) -> sqlx::Result<()> {
     let mut tx = db.begin().await?;
     // Locked, so the hourly run and someone opening the app can't add the same day twice.
@@ -62,9 +72,12 @@ async fn catch_up(db: &PgPool, id: i64, today: NaiveDate) -> sqlx::Result<()> {
     .await?;
     let Some((user_id, category, kind, amount, currency, note, every, start, mut done, account, to_account, budget)) = row else { return Ok(()) };
     // A recurring transfer (into savings): from its account, or the everyday one in its currency.
-    let transfer_from = if kind == "transfer" {
+    let transfer_from: Option<i64> = if kind == "transfer" {
         match account {
-            Some(a) => Some(a),
+            Some(a) => sqlx::query_scalar("SELECT id FROM accounts WHERE id = $1 AND currency = $2 AND NOT archived")
+                .bind(a).bind(&currency)
+                .fetch_optional(&mut *tx)
+                .await?,
             None => sqlx::query_scalar(
                 "SELECT id FROM accounts WHERE budget_id = $1 AND kind = 'regular' AND currency = $2 AND NOT archived ORDER BY position, id LIMIT 1",
             )
@@ -76,10 +89,11 @@ async fn catch_up(db: &PgPool, id: i64, today: NaiveDate) -> sqlx::Result<()> {
         None
     };
     let to_currency: Option<String> = match to_account {
-        Some(a) => sqlx::query_scalar("SELECT currency FROM accounts WHERE id = $1").bind(a).fetch_optional(&mut *tx).await?,
+        Some(a) => sqlx::query_scalar("SELECT currency FROM accounts WHERE id = $1 AND NOT archived").bind(a).fetch_optional(&mut *tx).await?,
         None => None,
     };
     if kind == "transfer" && (transfer_from.is_none() || to_currency.as_deref() != Some(currency.as_str())) {
+        // The list shows it as stalled (see `STALLED`) until its accounts are fixed.
         tracing::warn!(recurring = id, "recurring transfer without accounts in its currency; skipped");
         return Ok(());
     }
@@ -132,18 +146,22 @@ pub struct RecurringOut {
     next_date: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     account_id: Option<i64>,
+    /// A transfer that can't be made: an account it moves between is gone, archived or in
+    /// another currency. It waits, adding nothing, until that is fixed.
+    stalled: bool,
 }
 
 pub async fn list(State(state): AppRef, headers: HeaderMap) -> ApiResult<Json<Vec<RecurringOut>>> {
     let me = user(&state, &headers).await?;
     sync_budget(&state.db, me.budget_owner_id).await?;
-    let rows = sqlx::query(
+    const SQL: &str = concat!(
         "SELECT r.id, r.category_id, COALESCE(p.id, c.id) AS root_id, COALESCE(p.name, c.name) AS category_name,
                 COALESCE(p.emoji, c.emoji) AS emoji, CASE WHEN p.id IS NULL THEN NULL ELSE c.name END AS subcategory_name,
-                r.type, r.amount, r.currency, r.note, r.every, r.start_date, r.next_date, r.account_id
+                r.type, r.amount, r.currency, r.note, r.every, r.start_date, r.next_date, r.account_id, ", STALLED!(), "
          FROM recurring r JOIN categories c ON c.id = r.category_id LEFT JOIN categories p ON p.id = c.parent_id
-         WHERE r.budget_id = $1 ORDER BY r.next_date, r.id",
-    )
+         WHERE r.budget_id = $1 ORDER BY r.next_date, r.id"
+    );
+    let rows = sqlx::query(SQL)
     .bind(me.budget_owner_id)
     .fetch_all(&state.db)
     .await?;
@@ -152,7 +170,7 @@ pub async fn list(State(state): AppRef, headers: HeaderMap) -> ApiResult<Json<Ve
             .map(|r| RecurringOut {
                 id: r.get(0), category_id: r.get(1), root_id: r.get(2), category_name: r.get(3), emoji: r.get(4),
                 subcategory_name: r.get(5), kind: r.get(6), amount: r.get(7), currency: r.get(8), note: r.get(9),
-                every: r.get(10), start_date: r.get(11), next_date: r.get(12), account_id: r.get(13),
+                every: r.get(10), start_date: r.get(11), next_date: r.get(12), account_id: r.get(13), stalled: r.get(14),
             })
             .collect(),
     ))
@@ -233,6 +251,18 @@ pub async fn update(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64
         .fetch_optional(&state.db)
         .await?;
     let Some((amount, currency)) = current else { return Err(not_found()) };
+    if let Some(c) = &u.currency {
+        // A transfer moves money between two accounts of one currency: its currency is theirs.
+        let to: Option<String> = sqlx::query_scalar(
+            "SELECT a.currency FROM recurring r JOIN accounts a ON a.id = r.to_account_id WHERE r.id = $1 AND r.type = 'transfer'",
+        )
+        .bind(id)
+        .fetch_optional(&state.db)
+        .await?;
+        if to.is_some_and(|to| to != crate::rates::symbol(c)) {
+            return Err(ApiError::status(400, "Валюта регулярного перевода — валюта счёта, на который он идёт"));
+        }
+    }
     check_amount(u.amount.unwrap_or(amount), u.currency.as_deref().unwrap_or(&currency))?;
     check_account(&state, me.budget_owner_id, u.account_id, u.currency.as_deref().unwrap_or(&currency)).await?;
     sqlx::query(

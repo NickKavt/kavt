@@ -144,6 +144,8 @@ export function Reports() {
     setP(next);
   };
   const [from, to] = range(p);
+  // An operation changed or deleted (the home screen reloads after it) shows in the report too.
+  const home = useStore().home;
   useEffect(() => {
     let live = true;
     setLoading(true);
@@ -153,7 +155,7 @@ export function Reports() {
       .catch(e => live && setError(errorText(e)))
       .finally(() => live && setLoading(false));
     return () => (live = false);
-  }, [ymd(from), ymd(to)]);
+  }, [ymd(from), ymd(to), home]);
   const swipe = useSwipe(n => p.mode !== "custom" && set(shift(p, n)));
 
   const currencies = report ? usedCurrencies(report.expense) : [];
@@ -192,7 +194,7 @@ export function Reports() {
           <${Categories} report=${report} currency=${currency} />
         </div>`}
         <div class="section-title">${t("cat.operations", { n: report.transactions.length })}</div>
-        <${OperationList} ops=${report.transactions} showCategory onOpen=${null} />`}
+        <${OperationList} ops=${report.transactions} showCategory onOpen=${op => openSheet("editOperation", { op, categoryId: op.category_id })} />`}
     </div>
   </div>`;
 }
