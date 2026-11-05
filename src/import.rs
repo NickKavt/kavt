@@ -115,30 +115,30 @@ pub async fn export(State(state): AppRef, headers: HeaderMap) -> ApiResult<Respo
         .into_response())
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct ImportRow {
-    date: NaiveDate,
+    pub date: NaiveDate,
     /// expense, income, savings, withdrawal or interest (added as a deposit).
     #[serde(rename = "type")]
-    kind: String,
+    pub kind: String,
     #[serde(default)]
-    category: String,
+    pub category: String,
     #[serde(default)]
-    subcategory: String,
-    amount: f64,
-    currency: String,
+    pub subcategory: String,
+    pub amount: f64,
+    pub currency: String,
     #[serde(default)]
-    note: String,
+    pub note: String,
     /// The account by name (made when missing); without it each operation goes to the
     /// everyday account of its currency.
     #[serde(default)]
-    account: String,
+    pub account: String,
     /// A transfer's other end, and what arrived there when that is another currency.
     #[serde(default)]
-    to_account: String,
-    to_amount: Option<f64>,
+    pub to_account: String,
+    pub to_amount: Option<f64>,
     #[serde(default)]
-    to_currency: String,
+    pub to_currency: String,
 }
 
 #[derive(Deserialize)]
@@ -264,14 +264,18 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
     if body.rows.len() > MAX_ROWS {
         return Err(ApiError::status(400, "Слишком много строк, разделите файл"));
     }
-    let budget = me.budget_owner_id;
-    let mut tx = state.db.begin().await?;
+    import_rows(&state.db, me.id, me.budget_owner_id, &body.rows, body.dry_run).await.map(Json)
+}
+
+/// Adds the rows to the budget as `user`, in one transaction; the demo fills its budgets with it.
+pub async fn import_rows(db: &sqlx::PgPool, user: i64, budget: i64, rows: &[ImportRow], dry_run: bool) -> ApiResult<serde_json::Value> {
+    let mut tx = db.begin().await?;
     let mut cats = Categories { budget, known: HashMap::new(), system: HashMap::new(), created: Vec::new(), tx: &mut tx };
     let (mut added, mut skipped) = (0u64, 0u64);
     // The same row twice in one file is two operations (two coffees on one day), so each copy
     // gets its own number in the fingerprint.
     let mut seen: HashMap<String, u32> = HashMap::new();
-    for (line, r) in body.rows.iter().enumerate() {
+    for (line, r) in rows.iter().enumerate() {
         let bad = |why: &str| ApiError::status(400, &format!("Строка {}: {why}", line + 1));
         let account_name = clean(&r.account, 60);
         if r.kind == "opening" || r.kind == "transfer" {
@@ -320,7 +324,7 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
             let n = seen.entry(base.clone()).or_default();
             *n += 1;
             let key = hex::encode(Sha256::digest(format!("{base}\u{1f}{n}").as_bytes()));
-            let fresh = pair(&mut cats, me.id, (from, amount, &cur), (to, to_amount, &to_cur), &note, &date, &key).await?;
+            let fresh = pair(&mut cats, user, (from, amount, &cur), (to, to_amount, &to_cur), &note, &date, &key).await?;
             if fresh { added += 1 } else { skipped += 1 }
             continue;
         }
@@ -366,14 +370,14 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
                     "INSERT INTO transactions (user_id, category_id, account_id, type, amount, currency, note, transaction_date, source, import_key)
                      VALUES ($1, $2, $3, 'income', $4, $5, NULLIF($6, ''), $7, 'interest_fixed', $8) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING",
                 )
-                .bind(me.id).bind(pct).bind(savings).bind(amount).bind(&cur).bind(&note).bind(&date).bind(&key)
+                .bind(user).bind(pct).bind(savings).bind(amount).bind(&cur).bind(&note).bind(&date).bind(&key)
                 .execute(&mut **cats.tx)
                 .await?
                 .rows_affected() == 1
             } else {
-                let regular = regular_account(&mut cats, me.id, &cur).await?;
+                let regular = regular_account(&mut cats, user, &cur).await?;
                 let (from, to) = if source == Some("withdrawal") { (savings, regular) } else { (regular, savings) };
-                pair(&mut cats, me.id, (from, amount, &cur), (to, amount, &cur), &note, &date, &key).await?
+                pair(&mut cats, user, (from, amount, &cur), (to, amount, &cur), &note, &date, &key).await?
             };
             if fresh { added += 1 } else { skipped += 1 }
             continue;
@@ -383,19 +387,19 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
             "INSERT INTO transactions (user_id, category_id, type, amount, currency, note, transaction_date, source, import_key, account_id)
              VALUES ($1, $2, $3, $4, $5, NULLIF($6, ''), $7, $8, $9, $10) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING",
         )
-        .bind(me.id).bind(target).bind(kind).bind(amount).bind(&cur).bind(&note).bind(&date).bind(source).bind(key).bind(account)
+        .bind(user).bind(target).bind(kind).bind(amount).bind(&cur).bind(&note).bind(&date).bind(source).bind(key).bind(account)
         .execute(&mut **cats.tx)
         .await?;
         if done.rows_affected() == 1 { added += 1 } else { skipped += 1 }
     }
     let created = std::mem::take(&mut cats.created);
-    if body.dry_run {
+    if dry_run {
         tx.rollback().await?;
     } else {
         tx.commit().await?;
         tracing::info!(budget, added, skipped, "operations imported");
         // Rates of the imported operations, each on its own day, in the background.
-        let db = state.db.clone();
+        let db = db.clone();
         tokio::spawn(async move {
             // A batch at a time; a source that doesn't answer is left for the hourly run.
             while let Ok(n) = crate::rates::fill(&db, Some(budget)).await {
@@ -405,7 +409,7 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
             }
         });
     }
-    Ok(Json(json!({ "added": added, "skipped": skipped, "created": created, "dry_run": body.dry_run })))
+    Ok(json!({ "added": added, "skipped": skipped, "created": created, "dry_run": dry_run }))
 }
 
 /// The savings account of that name and currency, made when the file is the first to name it.

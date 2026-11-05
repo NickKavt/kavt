@@ -2,6 +2,8 @@
 
 A self-hosted family budget. Install it with Docker, open it in a browser and add it to your phone's home screen; it then opens like an app. Your data stays in your own database. It can also open inside Telegram as a Mini App, if you want that.
 
+**Try it without installing:** [demo.mybudg.uk](https://demo.mybudg.uk) opens a budget of your own with made-up data, no sign-up. It is deleted a day later.
+
 <p align="center">
   <img src="docs/screenshots/home.png" width="200" alt="Home: what is left this month and spending by category">
   <img src="docs/screenshots/expense.png" width="200" alt="A new expense: type 120+45 and 165 is saved">
@@ -126,6 +128,7 @@ docker compose up -d
 | `DATABASE_URL` | set by `compose.yaml` | PostgreSQL address |
 | `BUDGET_BIND` | `127.0.0.1` | `0.0.0.0` opens the app to your home network |
 | `BUDGET_SIGNUP` | `invite` | `invite`: people join with a link. `open`: anyone can create a budget of their own on the sign-in page |
+| `BUDGET_DEMO` | off | `1` makes a public demo: each visitor gets a budget with made-up data, without a password, deleted after a day. Passwords, invitations, two-step sign-in and Telegram are off. Not for real money |
 | `BUDGET_SESSION_COOKIE_SECURE` | auto | HTTPS-only session cookie. Auto: when the proxy says the request came over HTTPS |
 | `BUDGET_SESSION_TTL_SECONDS` | `2592000` | How long a sign-in lasts (30 days) |
 | `TELEGRAM_BOT_TOKEN` | empty | Turns on opening the budget inside Telegram |

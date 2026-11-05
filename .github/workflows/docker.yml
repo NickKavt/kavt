@@ -1,6 +1,7 @@
 # Every push: check the code (tests, clippy, frontend syntax, known vulnerabilities), build the
 # image and start it with a database to see that it comes up healthy.
-# Pushes to main and version tags (v1.2.3) also publish it to ghcr.io for amd64 and arm64.
+# Pushes to main and version tags (v1.2.3) also publish it to ghcr.io for amd64 and arm64,
+# each built natively on a runner of its kind.
 name: docker
 
 on:
@@ -54,13 +55,23 @@ jobs:
         if: always()
         run: docker compose logs app
 
+  # Each platform builds on a runner of its own kind (arm64 natively, not emulated: about
+  # 5 minutes instead of 25), pushed by digest; `manifest` then joins them under the tags.
   publish:
     needs: [checks, smoke]
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - uses: docker/setup-qemu-action@v3
+      - name: Image name (lowercase, as registries require)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v4
       - uses: docker/login-action@v4
         with:
@@ -70,17 +81,57 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ env.IMAGE }}
+      - id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.platform }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.platform }}
+      - name: Keep the digest
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          digest='${{ steps.build.outputs.digest }}'
+          touch "$RUNNER_TEMP/digests/${digest#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.runner }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Image name (lowercase, as registries require)
+        run: echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+      - name: One image for both platforms, under its tags
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf "$IMAGE@sha256:%s " *)
+          docker buildx imagetools inspect "$IMAGE:${{ steps.meta.outputs.version }}"

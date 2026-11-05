@@ -14,7 +14,7 @@ import { Category } from "./screens/category.js";
 import { Reports } from "./screens/reports.js";
 import { Manage, Settings } from "./screens/manage.js";
 import { SheetHost } from "./screens/sheets.js";
-import { AuthScreen } from "./auth.js";
+import { AuthScreen, DemoScreen, DemoBar } from "./auth.js";
 
 const TAB_ICONS = { home: "🏠", reports: "📊", manage: "🗂", settings: "⚙️" };
 
@@ -55,6 +55,7 @@ function App() {
   const s = useStore();
   useEffect(syncBack, [s.route, !!s.sheet]);
   if (s.fatal) return html`<${Fatal} kind=${s.fatal} />`;
+  if (s.auth?.mode === "demo") return html`<${DemoScreen} onDone=${signedIn} />`;
   if (s.auth) return html`<${AuthScreen} key=${s.auth.mode} mode=${s.auth.mode} token=${s.auth.token} onDone=${signedIn} />`;
   if (s.booting) return html`<div class="boot"><div class="spinner"></div></div>`;
   const r = s.route;
@@ -64,6 +65,7 @@ function App() {
     : r.name === "settings" ? html`<${Settings} />`
     : html`<${Home} />`;
   return html`
+    ${s.server?.demo && html`<${DemoBar} />`}
     ${!s.online && html`<div class="offline">${t("err.offline")}</div>`}
     <main class=${"screen" + (r.name === "category" ? "" : " with-tabs") + (r.name === "home" || r.name === "reports" ? " screen-wide" : "")}>${screen}</main>
     <${TabBar} route=${r} />
@@ -105,7 +107,7 @@ async function boot() {
       } catch (err) {
         if (err.message !== "need-login") throw err;
         // A browser: the owner is created first, an invitation leads to joining, else sign in.
-        const mode = invite ? "invite" : server.needs_setup ? "setup" : "login";
+        const mode = server.demo ? "demo" : invite ? "invite" : server.needs_setup ? "setup" : "login";
         return update({ auth: { mode, token: invite }, booting: false });
       }
     }

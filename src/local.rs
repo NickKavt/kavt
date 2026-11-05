@@ -87,7 +87,7 @@ fn token_hash(token: &str) -> String {
 }
 
 /// Opens a session and answers with the user and the session cookie.
-async fn signed_in(state: &AppState, headers: &HeaderMap, addr: SocketAddr, user_id: i64) -> ApiResult<Response> {
+pub(crate) async fn signed_in(state: &AppState, headers: &HeaderMap, addr: SocketAddr, user_id: i64) -> ApiResult<Response> {
     let ip = limit::client_ip(headers, Some(addr));
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok());
     let token = auth::open_session(&state.db, &state.cfg, user_id, &ip, ua).await?;
@@ -130,9 +130,12 @@ async fn create_person(state: &AppState, a: &AccountIn, role: &str, budget: Opti
 pub async fn setup_state(State(state): AppRef) -> ApiResult<Json<serde_json::Value>> {
     let has_owner: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE role = 'owner')").fetch_one(&state.db).await?;
     Ok(Json(json!({
-        "needs_setup": !has_owner,
+        "needs_setup": !has_owner && !state.cfg.demo,
         "telegram": !state.cfg.bot_token.is_empty(),
         "signup_open": state.cfg.open_signup,
+        // The public demo: no owner, a «try it» button instead of signing in.
+        "demo": state.cfg.demo,
+        "source": state.cfg.source_url,
     })))
 }
 

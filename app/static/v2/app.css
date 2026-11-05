@@ -445,3 +445,10 @@ a.btn { display: block; text-align: center; text-decoration: none; }
 .picker-search, .sheet-tall { height: min(78vh, calc(var(--vvh, 100vh) - 12px - env(safe-area-inset-top))); }
 .picker-search .picker-list, .sheet-tall .sheet-body { flex: 1; min-height: 0; }
 .sheet-tall .my-currencies { max-height: none; flex: 1; min-height: 0; overflow-y: auto; }
+
+/* The public demo (src/demo.rs) */
+.demo-bar { position: sticky; top: 0; z-index: 41; padding: calc(6px + env(safe-area-inset-top)) 14px 6px; text-align: center; font-size: 12.5px;
+  background: var(--accent-soft); color: var(--text-2); border-bottom: 1px solid var(--line); }
+.demo-bar a { color: var(--accent); font-weight: 600; text-decoration: none; white-space: nowrap; }
+.demo-langs { align-self: center; }
+.demo-langs .seg-btn { flex: none; padding: 7px 14px; white-space: nowrap; }

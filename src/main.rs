@@ -7,6 +7,7 @@
 mod accounts;
 mod auth;
 mod db;
+mod demo;
 mod limit;
 mod local;
 mod import;
@@ -44,6 +45,8 @@ pub struct Config {
     /// Whether someone nobody invited may start a budget of their own (`BUDGET_SIGNUP=open`).
     /// With `invite`, only the owner and the people added in the app can sign in.
     pub open_signup: bool,
+    /// The public demo (`BUDGET_DEMO=1`, src/demo.rs).
+    pub demo: bool,
     pub session_ttl: i64,
     /// `Some` when `BUDGET_SESSION_COOKIE_SECURE` says; `None` (auto) marks the cookie HTTPS-only
     /// when the proxy in front says the request came over HTTPS.
@@ -108,6 +111,7 @@ impl Config {
             bot_token: env::var("TELEGRAM_BOT_TOKEN").unwrap_or_default(),
             owner_telegram_id: env::var("OWNER_TELEGRAM_ID").ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
             open_signup: env::var("BUDGET_SIGNUP").is_ok_and(|v| v.trim().eq_ignore_ascii_case("open")),
+            demo: env::var("BUDGET_DEMO").is_ok_and(|v| matches!(v.trim(), "1" | "true" | "yes")),
             // A month: the app is opened from the home screen and shouldn't ask for the password often.
             session_ttl: env_or("BUDGET_SESSION_TTL_SECONDS", 30 * 86_400),
             cookie_secure: env::var("BUDGET_SESSION_COOKIE_SECURE").ok().and_then(|v| match v.trim() {
@@ -1180,7 +1184,7 @@ async fn page(path: &str) -> Response {
 // ---------------------------------------------------------------------------
 // Background jobs: expired sessions are removed once a minute
 // ---------------------------------------------------------------------------
-async fn worker(db: PgPool, every: Duration) {
+async fn worker(db: PgPool, every: Duration, demo: bool) {
     let mut tick = tokio::time::interval(every);
     let mut last_interest = None;
     loop {
@@ -1235,6 +1239,9 @@ async fn worker(db: PgPool, every: Duration) {
             // recurring payments, interest or an import.
             if let Err(e) = rates::fill(&db, None).await {
                 tracing::warn!(error = %e, "rates of operations not filled");
+            }
+            if demo && let Err(e) = demo::expire(&db).await {
+                tracing::warn!(error = %e, "old demo budgets not removed");
             }
         }
     }
@@ -1295,7 +1302,10 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/2fa/recovery-codes", post(totp::recovery_codes))
         .route_layer(from_fn_with_state(password_limit, limit::limit));
     // Asked on every start before signing in; an invitation link can't be guessed (192 bits).
+    // A demo budget is a few hundred rows; a few per address per hour is plenty.
+    let demo_limit = leak(Limiter::new(4, Duration::from_secs(15 * 60)));
     let public = Router::new()
+        .route("/api/demo", post(demo::start).route_layer(from_fn_with_state(demo_limit, limit::limit)))
         .route("/api/setup", get(local::setup_state))
         .route("/api/invite/{token}", get(local::check_invite))
         .route_layer(from_fn_with_state(auth_limit, limit::limit));
@@ -1351,6 +1361,7 @@ fn app(state: Arc<AppState>) -> Router {
                 .service(ServeDir::new(&state.cfg.static_dir)),
         )
         .fallback(get(index))
+        .layer(axum::middleware::from_fn_with_state(state.clone(), demo::guard))
         .with_state(state)
 }
 
@@ -1389,7 +1400,10 @@ async fn main() -> anyhow::Result<()> {
     let database_url = env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
     let db = PgPoolOptions::new().max_connections(8).acquire_timeout(Duration::from_secs(10)).connect(&database_url).await?;
     migrate::run(&db).await?;
-    tokio::spawn(worker(db.clone(), Duration::from_secs(env_or("BUDGET_WORKER_INTERVAL_SECONDS", 60))));
+    tokio::spawn(worker(db.clone(), Duration::from_secs(env_or("BUDGET_WORKER_INTERVAL_SECONDS", 60)), cfg.demo));
+    if cfg.demo {
+        tracing::info!("BUDGET_DEMO is on: visitors get demo budgets that are deleted after a day");
+    }
 
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port: u16 = env_or("PORT", 8009);

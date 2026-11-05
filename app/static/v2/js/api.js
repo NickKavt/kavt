@@ -3,7 +3,7 @@
 // once; in a browser the app shows the sign-in screen instead.
 
 import { initData } from "./tg.js";
-import { update } from "./store.js";
+import { state, update } from "./store.js";
 
 export class ApiError extends Error {
   constructor(status, message) {
@@ -45,7 +45,7 @@ export async function api(path, options) {
       await signIn();
     } catch (err) {
       // In a browser an expired session leads to the sign-in screen.
-      if (err.message === "need-login") update({ auth: { mode: "login" } });
+      if (err.message === "need-login") update({ auth: { mode: state.server?.demo ? "demo" : "login" } });
       throw err;
     }
     return request(path, options);

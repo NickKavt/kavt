@@ -60,6 +60,8 @@ const SERVER_ERRORS = {
   "Пользователь не найден": "err.userNotFound",
   "Сессия не найдена": "err.sessionNotFound",
   "Неизвестная роль": "err.unknownRole",
+  "В демо это недоступно": "err.demoOff",
+  "Демо сейчас занято, попробуйте позже": "err.demoFull",
   "Недостаточно прав": "err.noRights",
   "Нельзя снять права с хозяина бюджета": "err.ownerKeepsRights",
   "Нельзя удалить owner": "err.cantRemoveOwner",

@@ -3,7 +3,7 @@
 // own. Inside Telegram none of this is shown: Telegram signs people in.
 
 import { html, useEffect, useState } from "../vendor/preact-htm.js";
-import { t, errorText, currentLang } from "./i18n.js";
+import { t, errorText, currentLang, setLang, LANGS } from "./i18n.js";
 import { api } from "./api.js";
 import { state, update } from "./store.js";
 
@@ -91,4 +91,59 @@ export function AuthScreen({ mode, token, onDone }) {
     ${code !== null && html`<button type="button" class="link-btn auth-switch" onClick=${() => { setCode(null); setError(""); }}>${t("tfa.otherLogin")}</button>`}
     ${mode === "login" && code === null && html`<div class="muted small auth-foot">${t("auth.noAccount")}</div>`}
   </form>`;
+}
+
+/** The language a demo opens in: the one chosen before, else the browser's. */
+function demoLang() {
+  try {
+    if (localStorage.getItem("budget:lang")) return currentLang();
+  } catch {}
+  const browser = (navigator.language || "").slice(0, 2).toLowerCase();
+  return LANGS[browser] ? browser : "en";
+}
+
+/** The public demo's start: one button makes a budget with an example in it (src/demo.rs). */
+export function DemoScreen({ onDone }) {
+  const [lang, pick] = useState(() => {
+    const l = demoLang();
+    setLang(l);
+    return l;
+  });
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const choose = l => {
+    setLang(l);
+    pick(l);
+  };
+  const start = async () => {
+    setError("");
+    setBusy(true);
+    try {
+      onDone(await api("/api/demo", { method: "POST", body: { lang } }));
+    } catch (err) {
+      setError(errorText(err));
+      setBusy(false);
+    }
+  };
+  const source = state.server?.source;
+  return html`<div class="auth">
+    <div class="auth-logo"><img src="/static/icons/icon-192.png" alt="" width="72" height="72" /></div>
+    <h1 class="auth-title">${t("demo.title")}</h1>
+    <div class="muted auth-hint">${t("demo.hint")}</div>
+    <div class="seg demo-langs">
+      ${Object.entries(LANGS).map(([code, l]) => html`<button type="button" class=${"seg-btn" + (code === lang ? " active" : "")} onClick=${() => choose(code)}>${l.name}</button>`)}
+    </div>
+    ${error && html`<div class="auth-error">${error}</div>`}
+    <button type="button" class="btn btn-primary" disabled=${busy} onClick=${start}>${busy ? t("demo.making") : t("demo.start")}</button>
+    <div class="muted small auth-foot">${t("demo.note")}</div>
+    ${source && html`<a class="link-btn auth-switch" href=${source} target="_blank" rel="noopener">${t("demo.source")}</a>`}
+  </div>`;
+}
+
+/** A line above every screen of the demo: what it is and where the real thing is. */
+export function DemoBar() {
+  const source = state.server?.source;
+  return html`<div class="demo-bar">
+    ${t("demo.bar")}${source && html` · <a href=${source} target="_blank" rel="noopener">${t("demo.install")}</a>`}
+  </div>`;
 }

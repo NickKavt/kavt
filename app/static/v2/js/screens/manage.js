@@ -2,7 +2,7 @@
 
 import { html } from "../../vendor/preact-htm.js";
 import { t, LANGS, currentLang, setLang, errorText } from "../i18n.js";
-import { useStore, openSheet, update, toast } from "../store.js";
+import { state, useStore, openSheet, update, toast } from "../store.js";
 import { endOtherSessions, signOut, exportCsv, savePrefs } from "../data.js";
 import { ask, haptic, telegramUser, openLink, tg } from "../tg.js";
 import { Row, Chips, lastCurrency, ListSelect, sourceItems } from "../ui.js";
@@ -88,7 +88,7 @@ export function Settings() {
     } catch {}
     // In a browser the sign-in form comes back; Telegram would sign straight in again.
     if (tg?.initData) update({ fatal: "signed-out", me: null });
-    else update({ auth: { mode: "login" }, me: null, home: null });
+    else update({ auth: { mode: state.server?.demo ? "demo" : "login" }, me: null, home: null });
   };
   return html`<div>
     <h1 class="screen-title">${t("settings.title")}</h1>
