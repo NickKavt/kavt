@@ -1,7 +1,7 @@
 //! Interest on savings accounts (src/accounts.rs, kind 'savings' with `interest_kind` set). The
 //! account's money is its starting balance and everything booked on it: transfers in and out,
-//! income and expenses. Interest is paid as income «Проценты» on the account, marked
-//! `source = 'interest'`; it is income of the month like any other.
+//! income and expenses. Interest is paid as income «Проценты» (in the budget's language) on
+//! the account, marked `source = 'interest'`; it is income of the month like any other.
 //!
 //! Interest is counted day by day at `rate / 365` of the balance and paid after tax:
 //! - a flexible account (like a daily-interest account) pays on the last day of every month,
@@ -28,11 +28,8 @@ use chrono::{Datelike, Duration, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
-pub const INTEREST_NOTE: &str = "Проценты";
 pub const INTEREST_SOURCE: &str = "interest";
 pub const FIXED_SOURCE: &str = "interest_fixed";
-/// The transfer back from a deposit that ended.
-pub const RETURN_NOTE: &str = "Возврат вклада";
 /// Accounts can start at most this many days back.
 const MAX_DAYS: i64 = 3700;
 
@@ -258,6 +255,7 @@ struct Account {
 
 /// The income subcategory interest is booked on, made the first time it is needed.
 pub async fn interest_category(tx: &mut Transaction<'_, Postgres>, budget: i64) -> sqlx::Result<i64> {
+    let n = crate::db::names(crate::db::budget_lang(&mut **tx, budget).await?);
     let root: Option<i64> = sqlx::query_scalar("SELECT id FROM categories WHERE budget_id = $1 AND type = 'income' AND parent_id IS NULL ORDER BY id LIMIT 1")
         .bind(budget)
         .fetch_optional(&mut **tx)
@@ -265,14 +263,15 @@ pub async fn interest_category(tx: &mut Transaction<'_, Postgres>, budget: i64) 
     let root = match root {
         Some(id) => id,
         None => {
-            sqlx::query_scalar("INSERT INTO categories (name, emoji, color, type, budget_id) VALUES ('Доход', '💰', '#9ece6a', 'income', $1) RETURNING id")
-                .bind(budget)
+            sqlx::query_scalar("INSERT INTO categories (name, emoji, color, type, budget_id) VALUES ($2, '💰', '#9ece6a', 'income', $1) RETURNING id")
+                .bind(budget).bind(n.income)
                 .fetch_one(&mut **tx)
                 .await?
         }
     };
-    let sub: Option<i64> = sqlx::query_scalar("SELECT id FROM categories WHERE parent_id = $1 AND name = $2 ORDER BY id LIMIT 1")
-        .bind(root).bind(INTEREST_NOTE)
+    // Its name in any language: the budget's may have been named before languages were kept.
+    let sub: Option<i64> = sqlx::query_scalar("SELECT id FROM categories WHERE parent_id = $1 AND name = ANY($2) ORDER BY id LIMIT 1")
+        .bind(root).bind(&crate::db::INTEREST_NAMES[..])
         .fetch_optional(&mut **tx)
         .await?;
     match sub {
@@ -282,7 +281,7 @@ pub async fn interest_category(tx: &mut Transaction<'_, Postgres>, budget: i64) 
                 "INSERT INTO categories (name, emoji, color, type, parent_id, budget_id, visible_from)
                  VALUES ($1, '•', '#545c7e', 'income', $2, $3, '2000-01-01') RETURNING id",
             )
-            .bind(INTEREST_NOTE).bind(root).bind(budget)
+            .bind(n.interest).bind(root).bind(budget)
             .fetch_one(&mut **tx)
             .await
         }
@@ -362,6 +361,8 @@ async fn load(tx: &mut Transaction<'_, Postgres>, id: i64) -> sqlx::Result<Optio
 async fn sync(db: &PgPool, id: i64) -> sqlx::Result<Option<(Account, Simulation)>> {
     let mut tx = db.begin().await?;
     let Some(mut acc) = load(&mut tx, id).await? else { return Ok(None) };
+    // Notes of the payments it adds, in the budget's language.
+    let names = crate::db::names(crate::db::budget_lang(&mut *tx, acc.budget).await?);
     // Days up to yesterday are complete; a payment falls due once its last day is over.
     let sim = simulate(&acc.plan, &acc.deposits, &acc.fixed, today());
     let due = sim.payouts.clone();
@@ -403,7 +404,7 @@ async fn sync(db: &PgPool, id: i64) -> sqlx::Result<Option<(Account, Simulation)
             "INSERT INTO transactions (user_id, category_id, account_id, type, amount, currency, note, transaction_date, source)
              VALUES ($1, $2, $3, 'income', $4, $5, $6, $7, $8) RETURNING id",
         )
-        .bind(acc.budget).bind(cat).bind(acc.id).bind(amount).bind(&acc.currency).bind(INTEREST_NOTE).bind(day.to_string()).bind(INTEREST_SOURCE)
+        .bind(acc.budget).bind(cat).bind(acc.id).bind(amount).bind(&acc.currency).bind(names.interest).bind(day.to_string()).bind(INTEREST_SOURCE)
         .fetch_one(&mut *tx)
         .await?;
         kept.push((op, day, amount));
@@ -424,7 +425,7 @@ async fn sync(db: &PgPool, id: i64) -> sqlx::Result<Option<(Account, Simulation)
                 "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source, import_key)
                  VALUES ($1, $2, 'transfer', $3, $4, $5, $6, $7, $8) ON CONFLICT (import_key) WHERE import_key IS NOT NULL DO NOTHING RETURNING id",
             )
-            .bind(acc.budget).bind(acc.id).bind(balance).bind(&acc.currency).bind(RETURN_NOTE).bind(end.to_string()).bind(crate::accounts::OUT).bind(&key)
+            .bind(acc.budget).bind(acc.id).bind(balance).bind(&acc.currency).bind(names.deposit_return).bind(end.to_string()).bind(crate::accounts::OUT).bind(&key)
             .fetch_optional(&mut *tx)
             .await?;
             if let Some(out) = out {
@@ -432,7 +433,7 @@ async fn sync(db: &PgPool, id: i64) -> sqlx::Result<Option<(Account, Simulation)
                     "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source, pair_id)
                      VALUES ($1, $2, 'transfer', $3, $4, $5, $6, $7, $8) RETURNING id",
                 )
-                .bind(acc.budget).bind(to).bind(balance).bind(&acc.currency).bind(RETURN_NOTE).bind(end.to_string()).bind(crate::accounts::IN).bind(out)
+                .bind(acc.budget).bind(to).bind(balance).bind(&acc.currency).bind(names.deposit_return).bind(end.to_string()).bind(crate::accounts::IN).bind(out)
                 .fetch_one(&mut *tx)
                 .await?;
                 sqlx::query("UPDATE transactions SET pair_id = $2 WHERE id = $1").bind(out).bind(into).execute(&mut *tx).await?;

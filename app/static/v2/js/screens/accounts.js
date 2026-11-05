@@ -4,7 +4,7 @@
 // listed here too.
 
 import { html, useEffect, useState } from "../../vendor/preact-htm.js";
-import { t, errorText } from "../i18n.js";
+import { t, errorText, locale } from "../i18n.js";
 import { money, ymd, today, dayTitle, parseYmd } from "../format.js";
 import { state, useStore, openSheet, closeSheet, toast } from "../store.js";
 import * as data from "../data.js";
@@ -32,6 +32,8 @@ export function suggestedTax(currency, kind, days) {
 }
 const decimal = text => Number(String(text).trim().replace(/\s/g, "").replace(",", "."));
 const pctText = v => (v || v === 0 ? String(v).replace(".", ",") : "");
+// A rate or tax on screen, with the decimal mark of the interface language.
+const pctShow = v => Number(v).toLocaleString(locale(), { maximumFractionDigits: 4 });
 export const accountLabel = a => `${a.emoji} ${a.name}${a.owner_name ? ` · ${a.owner_name}` : ""}`;
 /** The label with the currency, unless the name already says it ("Основной ₺"). */
 export const accountChoice = a => (a.name.includes(a.currency) ? accountLabel(a) : `${accountLabel(a)} · ${a.currency}`);
@@ -174,7 +176,7 @@ export function SavingsCard() {
       <span class="row-icon">${a.emoji}</span>
       <span class="row-text">
         <span class="row-title">${a.name}</span>
-        <span class="row-sub">${[a.owner_name, a.interest && t("savings.rateShort", { rate: pctText(a.interest.rate) }), a.interest?.accrued > 0 && t("savings.accruedShort", { sum: money(a.interest.accrued, a.currency) })].filter(Boolean).join(" · ")}</span>
+        <span class="row-sub">${[a.owner_name, a.interest && t("savings.rateShort", { rate: pctShow(a.interest.rate) }), a.interest?.accrued > 0 && t("savings.accruedShort", { sum: money(a.interest.accrued, a.currency) })].filter(Boolean).join(" · ")}</span>
         ${a.target_amount > 0 && html`<span class="bar"><span style=${`width:${Math.min(100, Math.max(0, (a.balance / a.target_amount) * 100))}%`}></span></span>`}
       </span>
       <span class="row-right"><b>${money(a.balance, a.currency)}</b>${a.target_amount > 0 && html`<span class="muted small"> / ${money(a.target_amount, a.currency)}</span>`}</span>
@@ -221,7 +223,7 @@ function MoneyAccounts() {
     <div class="section-title">${t("accounts.savings")}</div>
     <div class="group">
       ${savings.map(a => html`<${Row} key=${a.id} icon=${a.emoji} title=${a.name}
-        subtitle=${[a.owner_name || t("accounts.shared"), a.currency, a.interest && t("savings.rateShort", { rate: pctText(a.interest.rate) })].filter(Boolean).join(" · ")}
+        subtitle=${[a.owner_name || t("accounts.shared"), a.currency, a.interest && t("savings.rateShort", { rate: pctShow(a.interest.rate) })].filter(Boolean).join(" · ")}
         right=${money(a.balance, a.currency)} onClick=${() => openSheet("accountView", { id: a.id })} />`)}
       <${Row} icon="＋" title=${t("savings.addAccount")} tone="accent" onClick=${() => openSheet("moneyAccount", { kind: "savings" })} />
     </div>
@@ -463,7 +465,7 @@ function AccountView({ id }) {
       <div class="muted small">${t("savings.goalLine", { goal: money(a.target_amount, a.currency), left: money(Math.max(0, a.target_amount - a.balance), a.currency), pct: Math.round(Math.max(0, (a.balance / a.target_amount) * 100)) })}</div>
     </div>`}
     ${a.interest && html`<div class="card interest-card">
-      <div class="in-main-row"><span>${a.interest.kind === "term" ? t("acc.term") : t("acc.flexible")}</span><b>${pctText(a.interest.rate)}%${a.interest.tax ? html`<span class="muted small"> · ${t("acc.tax")} ${pctText(a.interest.tax)}%</span>` : ""}</b></div>
+      <div class="in-main-row"><span>${a.interest.kind === "term" ? t("acc.term") : t("acc.flexible")}</span><b>${pctShow(a.interest.rate)}%${a.interest.tax ? html`<span class="muted small"> · ${t("acc.tax")} ${pctShow(a.interest.tax)}%</span>` : ""}</b></div>
       ${a.interest.ended
         ? html`<div class="in-main-row"><span class="muted">${t("acc.ended", { date: dayTitle(parseYmd(a.interest.ended)) })}</span><span>${payoutName(s, a.interest.payout_account_id)}</span></div>`
         : html`<div class="in-main-row"><span class="muted">${t("savings.accrued")}</span><span>${money(a.interest.accrued, a.currency)}</span></div>

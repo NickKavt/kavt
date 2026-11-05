@@ -1084,7 +1084,8 @@ async fn delete_user(State(state): AppRef, headers: HeaderMap, Path(id): Path<i6
         sqlx::query("DELETE FROM users WHERE id = $1").bind(id).execute(&state.db).await?;
     } else {
         sqlx::query("UPDATE users SET budget_owner_id = id, role = 'admin' WHERE id = $1").bind(id).execute(&state.db).await?;
-        db::seed_budget(&state.db, id).await?;
+        let lang = db::budget_lang(&state.db, me.budget_owner_id).await?;
+        db::seed_budget(&state.db, id, lang).await?;
     }
     Ok(ok())
 }

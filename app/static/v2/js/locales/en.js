@@ -23,6 +23,9 @@ export default {
 
   "home.balance": "Left this month",
   "home.carried": "{sum} from earlier months",
+  "home.toSavings": "to savings {sum}",
+  "home.exchanged": "exchanged {sum}",
+  "home.opened": "starting balance {sum}",
   "home.thisMonth": "this month",
   "home.noExpenses": "No expenses this month yet. Tap “＋ Expense” to add the first one.",
   "home.addExpense": "Expense",

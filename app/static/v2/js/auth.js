@@ -3,7 +3,7 @@
 // own. Inside Telegram none of this is shown: Telegram signs people in.
 
 import { html, useEffect, useState } from "../vendor/preact-htm.js";
-import { t, errorText } from "./i18n.js";
+import { t, errorText, currentLang } from "./i18n.js";
 import { api } from "./api.js";
 import { state, update } from "./store.js";
 
@@ -42,7 +42,8 @@ export function AuthScreen({ mode, token, onDone }) {
     if (creating && password !== repeat) return setError(t("auth.mismatch"));
     setBusy(true);
     try {
-      const body = { login: login.trim(), password, name: name.trim(), ...(code !== null && { code: code.trim() }) };
+      // A new budget names its first categories in the language it was made in.
+      const body = { login: login.trim(), password, name: name.trim(), lang: currentLang(), ...(code !== null && { code: code.trim() }) };
       const path = mode === "setup" ? "/api/setup" : mode === "register" ? "/api/auth/register" : mode === "invite" ? `/api/invite/${token}` : "/api/auth/login";
       const me = await api(path, { method: "POST", body });
       // An invitation link is used up; it shouldn't open again on the next start.

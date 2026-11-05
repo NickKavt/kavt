@@ -62,7 +62,8 @@ export function myCurrencies(s) {
 
 export function money(value, currency = "") {
   const n = Math.round((Number(value) || 0) * 100) / 100;
-  return `${n.toLocaleString(locale(), { maximumFractionDigits: 2 })} ${currencySymbol(currency)}`.trim();
+  // A no-break space: the sign never wraps away from its number.
+  return `${n.toLocaleString(locale(), { maximumFractionDigits: 2 })}\u00a0${currencySymbol(currency)}`.trim();
 }
 
 /** Currencies of a totals map that have money, the largest first. */

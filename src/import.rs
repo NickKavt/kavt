@@ -441,11 +441,12 @@ async fn regular_account(cats: &mut Categories<'_>, user: i64, currency: &str) -
     if let Some(id) = found {
         return Ok(id);
     }
+    let main = crate::db::names(crate::db::budget_lang(&mut **cats.tx, cats.budget).await?).main;
     sqlx::query_scalar(
         "INSERT INTO accounts (budget_id, name, emoji, currency, position)
-         VALUES ($1, 'Основной ' || $2, '💳', $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1)) RETURNING id",
+         VALUES ($1, $3 || ' ' || $2, '💳', $2, (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1)) RETURNING id",
     )
-    .bind(cats.budget).bind(currency)
+    .bind(cats.budget).bind(currency).bind(main)
     .fetch_one(&mut **cats.tx)
     .await
 }

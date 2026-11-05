@@ -2,6 +2,15 @@
 
 A self-hosted family budget. Install it with Docker, open it in a browser and add it to your phone's home screen; it then opens like an app. Your data stays in your own database. It can also open inside Telegram as a Mini App, if you want that.
 
+<p align="center">
+  <img src="docs/screenshots/home.png" width="200" alt="Home: what is left this month and spending by category">
+  <img src="docs/screenshots/expense.png" width="200" alt="A new expense: type 120+45 and 165 is saved">
+  <img src="docs/screenshots/deposit.png" width="200" alt="A term deposit: interest before and after tax, and where the money goes at the end">
+  <img src="docs/screenshots/report.png" width="200" alt="A month's report by day and category">
+</p>
+
+<p align="center"><img src="docs/screenshots/add-expense.gif" width="260" alt="Adding an expense in a few taps"></p>
+
 - Expenses and income by category and subcategory, in several currencies. Any operation can be changed or deleted later, from its category, its account or a report.
 - Accounts: cards and cash, each in its own currency, shared or someone's own, with a starting balance. Transfers between accounts, also between currencies at that day's rate.
 - An amount field that adds things up: type `120+45` and `165` is saved.

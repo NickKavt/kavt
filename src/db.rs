@@ -47,17 +47,86 @@ pub fn db_datetime_to_rfc3339(raw: &str) -> String {
 // ---------------------------------------------------------------------------
 // Seed data
 // ---------------------------------------------------------------------------
-const SEED_EXPENSES: [(&str, &str, &str); 5] = [
-    ("Продукты", "🛒", "#e0af68"),
-    ("Здоровье", "🏥", "#9ece6a"),
-    ("Квартира", "🏠", "#6183bb"),
-    ("Развлечения", "🎉", "#bb9af7"),
-    ("Другое", "📦", "#545c7e"),
-];
+/// What the server names on its own in a budget, in the budget's language.
+pub struct Names {
+    /// The first expense categories: name, emoji, colour.
+    pub expenses: [(&'static str, &'static str, &'static str); 5],
+    pub income: &'static str,
+    pub savings: &'static str,
+    /// The account made for a currency that has none yet ("Main $").
+    pub main: &'static str,
+    /// The income subcategory interest is paid into.
+    pub interest: &'static str,
+    /// The note of the transfer that returns a deposit at the end of its term.
+    pub deposit_return: &'static str,
+}
+
+const COLORS: [&str; 5] = ["#e0af68", "#9ece6a", "#6183bb", "#bb9af7", "#545c7e"];
+const EMOJI: [&str; 5] = ["🛒", "🏥", "🏠", "🎉", "📦"];
+const fn expenses(n: [&'static str; 5]) -> [(&'static str, &'static str, &'static str); 5] {
+    [(n[0], EMOJI[0], COLORS[0]), (n[1], EMOJI[1], COLORS[1]), (n[2], EMOJI[2], COLORS[2]), (n[3], EMOJI[3], COLORS[3]), (n[4], EMOJI[4], COLORS[4])]
+}
+
+const RU: Names = Names {
+    expenses: expenses(["Продукты", "Здоровье", "Квартира", "Развлечения", "Другое"]),
+    income: "Доход",
+    savings: "Сбережения",
+    main: "Основной",
+    interest: "Проценты",
+    deposit_return: "Возврат вклада",
+};
+const EN: Names = Names {
+    expenses: expenses(["Groceries", "Health", "Home", "Fun", "Other"]),
+    income: "Income",
+    savings: "Savings",
+    main: "Main",
+    interest: "Interest",
+    deposit_return: "Deposit returned",
+};
+const TR: Names = Names {
+    expenses: expenses(["Market", "Sağlık", "Ev", "Eğlence", "Diğer"]),
+    income: "Gelir",
+    savings: "Birikim",
+    main: "Ana hesap",
+    interest: "Faiz",
+    deposit_return: "Mevduat iadesi",
+};
+
+/// The interest subcategory in any language, so a budget never gets a second one.
+pub const INTEREST_NAMES: [&str; 3] = [RU.interest, EN.interest, TR.interest];
+
+pub fn names(lang: &str) -> &'static Names {
+    match lang {
+        "en" => &EN,
+        "tr" => &TR,
+        _ => &RU,
+    }
+}
+
+/// A language the budget can be in, from an interface or Telegram language code: Russian,
+/// English or Turkish; English for any other.
+pub fn budget_lang_of(code: Option<&str>) -> &'static str {
+    match code.unwrap_or("").trim().get(..2).map(str::to_ascii_lowercase).as_deref() {
+        Some("ru") => "ru",
+        Some("tr") => "tr",
+        _ => "en",
+    }
+}
+
+/// The language of a budget; budgets made before languages were kept are Russian.
+pub async fn budget_lang<'e>(db: impl sqlx::PgExecutor<'e>, budget: i64) -> sqlx::Result<&'static str> {
+    let lang: Option<String> = sqlx::query_scalar("SELECT lang FROM budget_settings WHERE budget_id = $1").bind(budget).fetch_optional(db).await?;
+    Ok(match lang.as_deref() {
+        Some("en") => "en",
+        Some("tr") => "tr",
+        _ => "ru",
+    })
+}
 
 /// A budget without categories (a new person, or one who left a shared budget and never had
-/// their own) gets the standard set. Existing budgets are left exactly as their users made them.
-pub async fn seed_budget(db: &PgPool, budget: i64) -> sqlx::Result<()> {
+/// their own) gets the standard set, named in `lang`, which becomes the budget's language.
+/// Existing budgets are left exactly as their users made them.
+pub async fn seed_budget(db: &PgPool, budget: i64, lang: &str) -> sqlx::Result<()> {
     let has_any: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM categories WHERE budget_id = $1)")
         .bind(budget)
         .fetch_one(db)
@@ -65,9 +134,13 @@ pub async fn seed_budget(db: &PgPool, budget: i64) -> sqlx::Result<()> {
     if has_any {
         return Ok(());
     }
+    sqlx::query("INSERT INTO budget_settings (budget_id, lang) VALUES ($1, $2) ON CONFLICT (budget_id) DO UPDATE SET lang = EXCLUDED.lang")
+        .bind(budget).bind(lang)
+        .execute(db)
+        .await?;
     ensure_system_root(db, budget, "income").await?;
     ensure_system_root(db, budget, "savings").await?;
-    for (name, emoji, color) in SEED_EXPENSES {
+    for (name, emoji, color) in names(lang).expenses {
         sqlx::query("INSERT INTO categories (name, emoji, color, type, budget_id) VALUES ($1, $2, $3, 'expense', $4)")
             .bind(name).bind(emoji).bind(color).bind(budget)
             .execute(db)
@@ -79,9 +152,10 @@ pub async fn seed_budget(db: &PgPool, budget: i64) -> sqlx::Result<()> {
 /// The single root category of a system type (income or savings) in a budget, created if
 /// missing; extra roots of that type are removed. Returns its id.
 pub async fn ensure_system_root(db: &PgPool, budget: i64, kind: &str) -> sqlx::Result<i64> {
+    let n = names(budget_lang(db, budget).await?);
     let (name, emoji, color, target) = match kind {
-        "income" => ("Доход", "💰", "#9ece6a", None),
-        _ => ("Сбережения", "🎯", "#2ac3de", Some(0.0)),
+        "income" => (n.income, "💰", "#9ece6a", None),
+        _ => (n.savings, "🎯", "#2ac3de", Some(0.0)),
     };
     let keep: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM categories WHERE parent_id IS NULL AND type = $1 AND budget_id = $2 ORDER BY id ASC LIMIT 1",
@@ -487,44 +561,34 @@ async fn month_sums(db: &PgPool, kind: &str, budget: i64, month: &(String, Strin
     Ok(out)
 }
 
+/// The month on the home screen, by currency. `balance` is the money on everyday accounts at
+/// the end of the month and `carry_in` at its start (both with starting balances, as the
+/// account list counts them); in between: income, expenses, money put into savings (`saved`,
+/// net of what came back), exchanges between currencies and accounts opened this month, so
+/// carry_in + income − expense − saved + exchanged + opened = balance.
 #[derive(Debug, Serialize)]
 pub struct MonthSummary {
     pub income: Totals,
     pub expense: Totals,
     pub carry_in: Totals,
     pub balance: Totals,
+    pub saved: Totals,
+    pub exchanged: Totals,
+    pub opened: Totals,
 }
 
 pub async fn month_summary(db: &PgPool, budget: i64, month: &(String, String)) -> sqlx::Result<MonthSummary> {
     let income = month_sums(db, "income", budget, month).await?;
     let expense = month_sums(db, "expense", budget, month).await?;
-    // Money put aside into savings accounts leaves the month; what comes back returns to it.
     let saved = crate::accounts::saved(db, budget, Some(&month.0), &month.1).await?;
-    let carry_rows = sqlx::query(
-        "SELECT t.currency, COALESCE(SUM(CASE WHEN t.type = 'income' THEN t.amount WHEN t.type = 'expense' THEN -t.amount ELSE 0 END), 0.0)
-         FROM transactions t JOIN categories c ON c.id = t.category_id
-         WHERE t.type IN ('income', 'expense') AND t.transaction_date < $1 AND c.budget_id = $2
-         GROUP BY t.currency",
-    )
-    .bind(&month.0).bind(budget)
-    .fetch_all(db)
-    .await?;
-    let saved_before = crate::accounts::saved(db, budget, None, &month.0).await?;
+    let exchanged = crate::accounts::exchanged(db, budget, &month.0, &month.1).await?;
+    let opened = crate::accounts::opened(db, budget, &month.0, &month.1).await?;
     let mut carry_in = zero_filled();
-    for r in carry_rows {
-        carry_in.insert(r.get(0), r.get(1));
-    }
-    for (c, v) in &saved_before {
-        *carry_in.entry(c.clone()).or_default() -= v;
-    }
-    let balance = DEFAULT_CURRENCIES
-        .iter()
-        .map(|c| {
-            let get = |m: &Totals| m.get(*c).copied().unwrap_or(0.0);
-            (c.to_string(), get(&carry_in) + get(&income) - get(&expense) - get(&saved))
-        })
-        .collect();
-    Ok(MonthSummary { income, expense, carry_in, balance })
+    carry_in.extend(crate::accounts::everyday_totals(db, budget, &month.0).await?);
+    let mut balance = zero_filled();
+    balance.extend(crate::accounts::everyday_totals(db, budget, &month.1).await?);
+    let round = |m: Totals| m.into_iter().map(|(c, v)| (c, (v * 100.0).round() / 100.0)).collect();
+    Ok(MonthSummary { income: round(income), expense: round(expense), carry_in, balance, saved: round(saved), exchanged: round(exchanged), opened })
 }
 
 #[derive(Debug, Serialize)]
@@ -706,4 +770,28 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
     report.categories.sort_by(|a, b| b.totals.values().sum::<f64>().total_cmp(&a.totals.values().sum::<f64>()));
     report.days = days.into_iter().map(|(date, expense)| ReportDay { date, expense }).collect();
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_budget_is_in_the_language_it_was_made_in() {
+        assert_eq!(budget_lang_of(Some("ru")), "ru");
+        assert_eq!(budget_lang_of(Some("tr-TR")), "tr");
+        assert_eq!(budget_lang_of(Some("EN")), "en");
+        assert_eq!(budget_lang_of(Some("de")), "en");
+        assert_eq!(budget_lang_of(None), "en");
+        assert_eq!(names("tr").expenses[0].0, "Market");
+        assert_eq!(names("en").income, "Income");
+        assert_eq!(names("ru").main, "Основной");
+    }
+
+    #[test]
+    fn interest_is_found_under_any_of_its_names() {
+        for lang in ["ru", "en", "tr"] {
+            assert!(INTEREST_NAMES.contains(&names(lang).interest));
+        }
+    }
 }

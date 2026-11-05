@@ -48,10 +48,8 @@ jobs:
           BUDGET_IMAGE=budget:ci docker compose up -d --build --wait --wait-timeout 600
           curl -fsS http://127.0.0.1:8009/health
           curl -fsS http://127.0.0.1:8009/static/manifest.webmanifest | grep -q standalone
-          # A fresh install asks for its owner, then signs the owner in.
-          curl -fsS http://127.0.0.1:8009/api/setup | grep -q '"needs_setup":true'
-          curl -fsS -c jar -H 'Content-Type: application/json' -d '{"login":"ci-owner","password":"ci password"}' http://127.0.0.1:8009/api/setup
-          curl -fsS -b jar "http://127.0.0.1:8009/api/home?month=$(date +%Y-%m)-01" | grep -q categories
+      - name: A fresh install, its owner, its language and the home card's money
+        run: node tools/smoke.mjs http://127.0.0.1:8009
       - name: Logs
         if: always()
         run: docker compose logs app

@@ -2,7 +2,7 @@
 
 import { html, useState } from "../../vendor/preact-htm.js";
 import { t } from "../i18n.js";
-import { CURRENCIES, money, usedCurrencies, monthTitle, addMonths, sameMonth, today } from "../format.js";
+import { CURRENCIES, money, usedCurrencies, monthTitle, addMonths, sameMonth, today, ymd } from "../format.js";
 import { state, useStore, openSheet } from "../store.js";
 import { navigate } from "../router.js";
 import { setMonth } from "../data.js";
@@ -35,6 +35,19 @@ function ShareBar({ parts, total }) {
   </div>`;
 }
 
+const near0 = v => Math.abs(v || 0) < 0.005;
+const signedMoney = (v, cur) => (v > 0 ? "+" : "") + money(v, cur);
+
+/** What else moved the everyday money this month besides income and expenses. */
+function moves(sum, cur) {
+  const saved = sum.saved?.[cur] || 0, exchanged = sum.exchanged?.[cur] || 0, opened = sum.opened?.[cur] || 0;
+  return [
+    !near0(saved) && t("home.toSavings", { sum: signedMoney(-saved, cur) }),
+    !near0(exchanged) && t("home.exchanged", { sum: signedMoney(exchanged, cur) }),
+    !near0(opened) && t("home.opened", { sum: signedMoney(opened, cur) }),
+  ].filter(Boolean);
+}
+
 /** One column per currency with money this month; with several, a tap picks the one the list below shows. */
 function Summary({ home, currencies, currency, onPick, parts, spent }) {
   const sum = home.month_summary || {};
@@ -53,6 +66,7 @@ function Summary({ home, currencies, currency, onPick, parts, spent }) {
             <span class="flow-out">↓ ${money(sum.expense?.[cur] || 0, cur)}</span>
           </span>
           ${Math.abs(carry) > 0.004 && html`<span class="flow-carry">${t("home.carried", { sum: money(carry, cur) })}</span>`}
+          ${moves(sum, cur).map(m => html`<span class="flow-carry">${m}</span>`)}
           <${Converted} amount=${balance} currency=${cur} />
         </button>`;
       })}
@@ -122,14 +136,14 @@ export function Home() {
   const spentIn = usedCurrencies(totals);
   const sum = home.month_summary || {};
   const active = new Set([...spentIn, ...usedCurrencies(sum.income), ...usedCurrencies(sum.balance), ...usedCurrencies(sum.carry_in)]);
-  // A fixed order, so the columns don't swap places as the amounts change.
-  // A fixed order: the four first, then other currencies by code.
+  // A fixed order, so the columns don't swap places: the four first, then others by code.
   const currencies = [...CURRENCIES.filter(c => active.has(c)), ...[...active].filter(c => !CURRENCIES.includes(c)).sort()];
   if (!currencies.length) currencies.push(lastCurrency());
   const currency = currencies.includes(picked) ? picked : spentIn[0] || currencies[0];
   const spent = totals[currency] || 0;
   const value = c => c.totals_by_currency?.[currency] || 0;
-  // Biggest spending first; empty categories keep their own order at the end.
+  // Biggest spending first; empty categories keep their own order at the end. The rows are new
+  // for each month: Chromium kept the dimmed look on a row that moved and stopped being empty.
   const sorted = [...expenses].sort((a, b) => value(b) - value(a));
   const parts = sorted.filter(c => value(c) > 0).map(c => ({ value: value(c), color: c.color }));
   const funds = ["income"].map(k => home.categories.find(c => c.type === k)).filter(Boolean);
@@ -141,7 +155,7 @@ export function Home() {
         <${Summary} home=${home} currencies=${currencies} currency=${currency} onPick=${c => { haptic(); setPicked(c); }} parts=${parts} spent=${spent} />
         ${spentIn.length === 0 && html`<div class="hint-card">${t("home.noExpenses")}</div>`}
         ${sorted.length > 0 && html`<div class="group cat-group">
-          ${sorted.map(c => html`<${ExpenseRow} key=${c.id} c=${c} currency=${currency} spent=${spent} />`)}
+          ${sorted.map(c => html`<${ExpenseRow} key=${`${c.id}:${ymd(s.month)}`} c=${c} currency=${currency} spent=${spent} />`)}
         </div>`}
       </div>
       <div class="home-side">

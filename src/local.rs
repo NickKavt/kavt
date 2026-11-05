@@ -34,6 +34,9 @@ pub struct AccountIn {
     password: String,
     #[serde(default)]
     name: String,
+    /// The interface language, for the names in a new budget.
+    #[serde(default)]
+    lang: Option<String>,
 }
 
 /// 3–32 lowercase Latin letters, digits, dots, dashes or underscores.
@@ -118,7 +121,7 @@ async fn create_person(state: &AppState, a: &AccountIn, role: &str, budget: Opti
     };
     if budget.is_none() {
         sqlx::query("UPDATE users SET budget_owner_id = id WHERE id = $1").bind(id).execute(&state.db).await?;
-        db::seed_budget(&state.db, id).await?;
+        db::seed_budget(&state.db, id, db::budget_lang_of(a.lang.as_deref())).await?;
     }
     Ok(id)
 }

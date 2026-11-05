@@ -189,7 +189,7 @@ pub async fn login(db: &PgPool, cfg: &Config, tg: &TelegramUser, ip: &str, user_
         .bind(user_id)
         .fetch_one(db)
         .await?;
-    crate::db::seed_budget(db, budget).await?;
+    crate::db::seed_budget(db, budget, crate::db::budget_lang_of(tg.language_code.as_deref())).await?;
     let token = open_session(db, cfg, user_id, ip, user_agent).await?;
     Ok((user_id, token))
 }

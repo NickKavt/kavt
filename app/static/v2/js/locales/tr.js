@@ -23,6 +23,9 @@ export default {
 
   "home.balance": "Bu ay kalan",
   "home.carried": "önceki aylardan {sum}",
+  "home.toSavings": "birikime {sum}",
+  "home.exchanged": "döviz değişimi {sum}",
+  "home.opened": "açılış bakiyesi {sum}",
   "home.thisMonth": "bu ay",
   "home.noExpenses": "Bu ay henüz gider yok. İlkini eklemek için “＋ Gider”e dokunun.",
   "home.addExpense": "Gider",

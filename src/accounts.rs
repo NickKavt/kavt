@@ -83,14 +83,15 @@ pub async fn list(db: &PgPool, budget: i64, today: Option<NaiveDate>) -> sqlx::R
     let any: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM accounts WHERE budget_id = $1)").bind(budget).fetch_one(db).await?;
     if !any {
         let main = crate::rates::settings(db, budget).await?.main_currency;
+        let name = crate::db::names(crate::db::budget_lang(db, budget).await?).main;
         // Two requests at once must not both make it; the lock is the one pick_account() takes.
         let mut tx = db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock(7001, $1::int)").bind(budget).execute(&mut *tx).await?;
         sqlx::query(
             "INSERT INTO accounts (budget_id, name, emoji, currency)
-             SELECT $1, 'Основной', '💳', $2 WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE budget_id = $1)",
+             SELECT $1, $3, '💳', $2 WHERE NOT EXISTS (SELECT 1 FROM accounts WHERE budget_id = $1)",
         )
-        .bind(budget).bind(main)
+        .bind(budget).bind(main).bind(name)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
@@ -449,14 +450,57 @@ pub async fn saved(db: &PgPool, budget: i64, from: Option<&str>, to: &str) -> sq
 
 /// Money on savings accounts by currency up to `until` (exclusive), each from its starting balance.
 pub async fn savings_totals(db: &PgPool, budget: i64, until: &str) -> sqlx::Result<crate::db::Totals> {
+    totals_of_kind(db, budget, "savings", until).await
+}
+
+/// Money on everyday accounts by currency up to `until` (exclusive): what the account list
+/// shows, added up by currency.
+pub async fn everyday_totals(db: &PgPool, budget: i64, until: &str) -> sqlx::Result<crate::db::Totals> {
+    totals_of_kind(db, budget, "regular", until).await
+}
+
+async fn totals_of_kind(db: &PgPool, budget: i64, kind: &str, until: &str) -> sqlx::Result<crate::db::Totals> {
     const SQL: &str = concat!(
         "SELECT a.currency, SUM(a.initial_amount + COALESCE((SELECT SUM(", signed!(), ") FROM transactions t
             WHERE t.account_id = a.id AND t.transaction_date < $2
               AND (a.initial_date IS NULL OR t.transaction_date >= a.initial_date)), 0))
          FROM accounts a
-         WHERE a.budget_id = $1 AND a.kind = 'savings' AND (a.initial_date IS NULL OR a.initial_date < $2)
+         WHERE a.budget_id = $1 AND a.kind = $3 AND (a.initial_date IS NULL OR a.initial_date < $2)
          GROUP BY a.currency"
     );
-    let rows: Vec<(String, f64)> = sqlx::query_as(SQL).bind(budget).bind(until).fetch_all(db).await?;
+    let rows: Vec<(String, f64)> = sqlx::query_as(SQL).bind(budget).bind(until).bind(kind).fetch_all(db).await?;
     Ok(rows.into_iter().map(|(c, v)| (c, (v * 100.0).round() / 100.0)).collect())
+}
+
+/// Money exchanged between everyday accounts of different currencies in `[from, to)`, by
+/// currency: what arrived in it minus what left it.
+pub async fn exchanged(db: &PgPool, budget: i64, from: &str, to: &str) -> sqlx::Result<crate::db::Totals> {
+    let rows: Vec<(String, f64)> = sqlx::query_as(
+        "SELECT t.currency, SUM(CASE WHEN t.source = 'transfer_in' THEN t.amount ELSE -t.amount END)
+         FROM transactions t
+         JOIN accounts a ON a.id = t.account_id
+         JOIN transactions p ON p.id = t.pair_id
+         JOIN accounts pa ON pa.id = p.account_id
+         WHERE a.budget_id = $1 AND t.type = 'transfer' AND a.kind = 'regular' AND pa.kind = 'regular'
+           AND t.currency <> p.currency AND t.transaction_date >= $2 AND t.transaction_date < $3
+           AND (a.initial_date IS NULL OR t.transaction_date >= a.initial_date)
+         GROUP BY t.currency",
+    )
+    .bind(budget).bind(from).bind(to)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Starting balances of everyday accounts dated in `[from, to)`, by currency.
+pub async fn opened(db: &PgPool, budget: i64, from: &str, to: &str) -> sqlx::Result<crate::db::Totals> {
+    let rows: Vec<(String, f64)> = sqlx::query_as(
+        "SELECT currency, SUM(initial_amount) FROM accounts
+         WHERE budget_id = $1 AND kind = 'regular' AND initial_amount <> 0 AND initial_date >= $2 AND initial_date < $3
+         GROUP BY currency",
+    )
+    .bind(budget).bind(from).bind(to)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
 }

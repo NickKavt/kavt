@@ -23,6 +23,9 @@ export default {
 
   "home.balance": "Остаток на месяц",
   "home.carried": "с прошлых месяцев {sum}",
+  "home.toSavings": "в сбережения {sum}",
+  "home.exchanged": "обмен валют {sum}",
+  "home.opened": "начальный остаток {sum}",
   "home.thisMonth": "за месяц",
   "home.noExpenses": "В этом месяце трат пока нет. Нажмите «＋ Расход», чтобы записать первую.",
   "home.addExpense": "Расход",
