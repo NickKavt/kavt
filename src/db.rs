@@ -67,60 +67,64 @@ const fn expenses(n: [&'static str; 5]) -> [(&'static str, &'static str, &'stati
     [(n[0], EMOJI[0], COLORS[0]), (n[1], EMOJI[1], COLORS[1]), (n[2], EMOJI[2], COLORS[2]), (n[3], EMOJI[3], COLORS[3]), (n[4], EMOJI[4], COLORS[4])]
 }
 
-const RU: Names = Names {
-    expenses: expenses(["Продукты", "Здоровье", "Квартира", "Развлечения", "Другое"]),
-    income: "Доход",
-    savings: "Сбережения",
-    main: "Основной",
-    interest: "Проценты",
-    deposit_return: "Возврат вклада",
-};
-const EN: Names = Names {
-    expenses: expenses(["Groceries", "Health", "Home", "Fun", "Other"]),
-    income: "Income",
-    savings: "Savings",
-    main: "Main",
-    interest: "Interest",
-    deposit_return: "Deposit returned",
-};
-const TR: Names = Names {
-    expenses: expenses(["Market", "Sağlık", "Ev", "Eğlence", "Diğer"]),
-    income: "Gelir",
-    savings: "Birikim",
-    main: "Ana hesap",
-    interest: "Faiz",
-    deposit_return: "Mevduat iadesi",
-};
+/// The languages a budget can be in; the first is the one of budgets made before languages were kept.
+pub const LANGS: [&str; 15] = ["ru", "en", "tr", "es", "pt", "fr", "de", "it", "pl", "uk", "be", "zh", "ja", "hi", "id"];
 
-/// The interest subcategory in any language, so a budget never gets a second one.
-pub const INTEREST_NAMES: [&str; 3] = [RU.interest, EN.interest, TR.interest];
-
-pub fn names(lang: &str) -> &'static Names {
-    match lang {
-        "en" => &EN,
-        "tr" => &TR,
-        _ => &RU,
-    }
+const fn n(
+    e: [&'static str; 5], income: &'static str, savings: &'static str, main: &'static str, interest: &'static str, deposit_return: &'static str,
+) -> Names {
+    Names { expenses: expenses(e), income, savings, main, interest, deposit_return }
 }
 
-/// A language the budget can be in, from an interface or Telegram language code: Russian,
-/// English or Turkish; English for any other.
-pub fn budget_lang_of(code: Option<&str>) -> &'static str {
-    match code.unwrap_or("").trim().get(..2).map(str::to_ascii_lowercase).as_deref() {
-        Some("ru") => "ru",
-        Some("tr") => "tr",
-        _ => "en",
+/// In the order of `LANGS`.
+const NAMES: [Names; 15] = [
+    n(["Продукты", "Здоровье", "Квартира", "Развлечения", "Другое"], "Доход", "Сбережения", "Основной", "Проценты", "Возврат вклада"),
+    n(["Groceries", "Health", "Home", "Fun", "Other"], "Income", "Savings", "Main", "Interest", "Deposit returned"),
+    n(["Market", "Sağlık", "Ev", "Eğlence", "Diğer"], "Gelir", "Birikim", "Ana hesap", "Faiz", "Mevduat iadesi"),
+    n(["Alimentación", "Salud", "Hogar", "Ocio", "Otros"], "Ingresos", "Ahorros", "Principal", "Intereses", "Devolución del depósito"),
+    n(["Mercado", "Saúde", "Casa", "Lazer", "Outros"], "Receitas", "Poupança", "Principal", "Juros", "Resgate do depósito"),
+    n(["Courses", "Santé", "Logement", "Loisirs", "Divers"], "Revenus", "Épargne", "Principal", "Intérêts", "Remboursement du dépôt"),
+    n(["Lebensmittel", "Gesundheit", "Wohnen", "Freizeit", "Sonstiges"], "Einnahmen", "Ersparnisse", "Hauptkonto", "Zinsen", "Festgeld zurückgezahlt"),
+    n(["Spesa", "Salute", "Casa", "Svago", "Altro"], "Entrate", "Risparmi", "Principale", "Interessi", "Rimborso deposito"),
+    n(["Jedzenie", "Zdrowie", "Mieszkanie", "Rozrywka", "Inne"], "Przychody", "Oszczędności", "Konto główne", "Odsetki", "Zwrot lokaty"),
+    n(["Продукти", "Здоров’я", "Житло", "Розваги", "Інше"], "Дохід", "Заощадження", "Основний", "Відсотки", "Повернення вкладу"),
+    n(["Прадукты", "Здароўе", "Жыллё", "Забавы", "Іншае"], "Даход", "Зберажэнні", "Асноўны", "Працэнты", "Вяртанне ўкладу"),
+    n(["食品", "医疗", "住房", "娱乐", "其他"], "收入", "储蓄", "主账户", "利息", "定期存款到期返还"),
+    n(["食費", "医療", "住まい", "娯楽", "その他"], "収入", "貯金", "メイン口座", "利息", "定期預金の払い戻し"),
+    n(["किराना", "स्वास्थ्य", "घर", "मनोरंजन", "अन्य"], "आय", "बचत", "मुख्य खाता", "ब्याज", "जमा की वापसी"),
+    n(["Belanja dapur", "Kesehatan", "Rumah", "Hiburan", "Lainnya"], "Pemasukan", "Tabungan", "Rekening utama", "Bunga", "Pengembalian deposito"),
+];
+
+/// The interest subcategory in any language, so a budget never gets a second one.
+pub const INTEREST_NAMES: [&str; 15] = {
+    let mut out = [""; 15];
+    let mut i = 0;
+    while i < 15 {
+        out[i] = NAMES[i].interest;
+        i += 1;
     }
+    out
+};
+
+/// One of `LANGS` for a stored or sent code; `None` when it isn't one of them.
+fn known(code: &str) -> Option<&'static str> {
+    LANGS.iter().copied().find(|l| l.eq_ignore_ascii_case(code))
+}
+
+pub fn names(lang: &str) -> &'static Names {
+    &NAMES[LANGS.iter().position(|l| *l == lang).unwrap_or(0)]
+}
+
+/// A language the budget can be in, from an interface or Telegram language code
+/// (`pt-BR` → `pt`); English for any other.
+pub fn budget_lang_of(code: Option<&str>) -> &'static str {
+    code.unwrap_or("").trim().get(..2).and_then(known).unwrap_or("en")
 }
 
 /// The language of a budget; budgets made before languages were kept are Russian.
 pub async fn budget_lang<'e>(db: impl sqlx::PgExecutor<'e>, budget: i64) -> sqlx::Result<&'static str> {
     let lang: Option<String> = sqlx::query_scalar("SELECT lang FROM budget_settings WHERE budget_id = $1").bind(budget).fetch_optional(db).await?;
-    Ok(match lang.as_deref() {
-        Some("en") => "en",
-        Some("tr") => "tr",
-        _ => "ru",
-    })
+    Ok(lang.as_deref().and_then(known).unwrap_or("ru"))
 }
 
 /// A budget without categories (a new person, or one who left a shared budget and never had
@@ -781,7 +785,9 @@ mod tests {
         assert_eq!(budget_lang_of(Some("ru")), "ru");
         assert_eq!(budget_lang_of(Some("tr-TR")), "tr");
         assert_eq!(budget_lang_of(Some("EN")), "en");
-        assert_eq!(budget_lang_of(Some("de")), "en");
+        assert_eq!(budget_lang_of(Some("de-DE")), "de");
+        assert_eq!(budget_lang_of(Some("pt-BR")), "pt");
+        assert_eq!(budget_lang_of(Some("ar")), "en");
         assert_eq!(budget_lang_of(None), "en");
         assert_eq!(names("tr").expenses[0].0, "Market");
         assert_eq!(names("en").income, "Income");
@@ -790,8 +796,9 @@ mod tests {
 
     #[test]
     fn interest_is_found_under_any_of_its_names() {
-        for lang in ["ru", "en", "tr"] {
+        for lang in LANGS {
             assert!(INTEREST_NAMES.contains(&names(lang).interest));
+            assert_eq!(budget_lang_of(Some(lang)), lang);
         }
     }
 }

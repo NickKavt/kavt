@@ -3,16 +3,34 @@
 // of plural forms ({ one, few, many, other }), chosen by Intl.PluralRules.
 
 import ru from "./locales/ru.js";
-import en from "./locales/en.js";
-import tr from "./locales/tr.js";
 
+// The same languages as the server's (src/db.rs, LANGS), each named in itself. Only the chosen
+// one is downloaded; Russian is always here, for a text another language lacks.
 export const LANGS = {
-  ru: { name: "Русский", locale: "ru-RU", dict: ru },
-  en: { name: "English", locale: "en-GB", dict: en },
-  tr: { name: "Türkçe", locale: "tr-TR", dict: tr },
+  en: { name: "English", locale: "en-GB", load: () => import("./locales/en.js") },
+  es: { name: "Español", locale: "es-ES", load: () => import("./locales/es.js") },
+  pt: { name: "Português (Brasil)", locale: "pt-BR", load: () => import("./locales/pt.js") },
+  fr: { name: "Français", locale: "fr-FR", load: () => import("./locales/fr.js") },
+  de: { name: "Deutsch", locale: "de-DE", load: () => import("./locales/de.js") },
+  it: { name: "Italiano", locale: "it-IT", load: () => import("./locales/it.js") },
+  pl: { name: "Polski", locale: "pl-PL", load: () => import("./locales/pl.js") },
+  tr: { name: "Türkçe", locale: "tr-TR", load: () => import("./locales/tr.js") },
+  id: { name: "Bahasa Indonesia", locale: "id-ID", load: () => import("./locales/id.js") },
+  ru: { name: "Русский", locale: "ru-RU", load: () => import("./locales/ru.js") },
+  uk: { name: "Українська", locale: "uk-UA", load: () => import("./locales/uk.js") },
+  be: { name: "Беларуская", locale: "be-BY", load: () => import("./locales/be.js") },
+  hi: { name: "हिन्दी", locale: "hi-IN", load: () => import("./locales/hi.js") },
+  zh: { name: "中文（简体）", locale: "zh-CN", load: () => import("./locales/zh.js") },
+  ja: { name: "日本語", locale: "ja-JP", load: () => import("./locales/ja.js") },
 };
+const dicts = { ru };
 
-// Shared with the old interface, so the choice carries over between them.
+/** Downloads a language's texts once. */
+export async function loadLang(code) {
+  if (!dicts[code]) dicts[code] = (await LANGS[code].load()).default;
+}
+
+// The choice is kept in this browser.
 const KEY = "budget:lang";
 
 function saved() {
@@ -20,7 +38,16 @@ function saved() {
     const v = localStorage.getItem(KEY);
     if (v && LANGS[v]) return v;
   } catch {}
-  return "ru";
+  return browserLang();
+}
+
+/** The browser's language when the app has it, else English. */
+function browserLang() {
+  for (const code of navigator.languages?.length ? navigator.languages : [navigator.language || ""]) {
+    const l = code.slice(0, 2).toLowerCase();
+    if (LANGS[l]) return l;
+  }
+  return "en";
 }
 
 let lang = saved();
@@ -29,8 +56,10 @@ document.documentElement.lang = lang;
 export const currentLang = () => lang;
 export const locale = () => LANGS[lang].locale;
 
-export function setLang(next) {
+/** Switches the interface to `next` once its texts are here. */
+export async function setLang(next) {
   if (!LANGS[next]) return;
+  await loadLang(next);
   lang = next;
   document.documentElement.lang = next;
   try {
@@ -39,7 +68,7 @@ export function setLang(next) {
 }
 
 export function t(key, vars) {
-  let text = LANGS[lang].dict[key] ?? ru[key];
+  let text = dicts[lang]?.[key] ?? ru[key];
   if (text === undefined) {
     console.warn("missing text", key);
     return key;

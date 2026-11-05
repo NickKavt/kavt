@@ -4,6 +4,7 @@
 
 import { html, useEffect, useState } from "../vendor/preact-htm.js";
 import { t, errorText, currentLang, setLang, LANGS } from "./i18n.js";
+import { ListSelect } from "./ui.js";
 import { api } from "./api.js";
 import { state, update } from "./store.js";
 
@@ -28,6 +29,7 @@ export function AuthScreen({ mode, token, onDone }) {
   const [invite, setInvite] = useState(null);
   // After a right password, when two-factor sign-in is on: the code from the app.
   const [code, setCode] = useState(null);
+  const [lang, setLangHere] = useState(currentLang);
   const creating = mode !== "login";
   const server = state.server || {};
 
@@ -74,6 +76,7 @@ export function AuthScreen({ mode, token, onDone }) {
     <div class="auth-logo"><img src="/static/icons/icon-192.png" alt="" width="72" height="72" /></div>
     <h1 class="auth-title">${title}</h1>
     ${hint && html`<div class="muted auth-hint">${hint}</div>`}
+    ${(mode === "setup" || mode === "register") && html`<${LangPicker} value=${lang} onChange=${setLangHere} />`}
     ${creating && html`<${Field} label=${t("auth.name")} value=${name} onInput=${e => setName(e.currentTarget.value)} autocomplete="name" maxlength="60" placeholder=${t("auth.namePlaceholder")} />`}
     ${code !== null && html`<div class="muted auth-hint">${t("tfa.loginHint")}</div>
       <${Field} label=${t("tfa.code")} value=${code} onInput=${e => setCode(e.currentTarget.value)} autocomplete="one-time-code" inputmode="numeric" autofocus
@@ -93,28 +96,18 @@ export function AuthScreen({ mode, token, onDone }) {
   </form>`;
 }
 
-/** The language a demo opens in: the one chosen before, else the browser's. */
-function demoLang() {
-  try {
-    if (localStorage.getItem("budget:lang")) return currentLang();
-  } catch {}
-  const browser = (navigator.language || "").slice(0, 2).toLowerCase();
-  return LANGS[browser] ? browser : "en";
+/** The interface language, on screens before signing in; `onChange` re-renders the screen. */
+function LangPicker({ value, onChange }) {
+  return html`<div class="auth-lang"><${ListSelect} items=${Object.entries(LANGS).map(([code, l]) => ({ value: code, label: l.name }))} value=${value}
+    onChange=${l => setLang(l).then(() => onChange(l))} title=${t("settings.language")} /></div>`;
 }
 
 /** The public demo's start: one button makes a budget with an example in it (src/demo.rs). */
 export function DemoScreen({ onDone }) {
-  const [lang, pick] = useState(() => {
-    const l = demoLang();
-    setLang(l);
-    return l;
-  });
+  // The one chosen before, else the browser's (i18n.js).
+  const [lang, pick] = useState(currentLang);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const choose = l => {
-    setLang(l);
-    pick(l);
-  };
   const start = async () => {
     setError("");
     setBusy(true);
@@ -130,9 +123,7 @@ export function DemoScreen({ onDone }) {
     <div class="auth-logo"><img src="/static/icons/icon-192.png" alt="" width="72" height="72" /></div>
     <h1 class="auth-title">${t("demo.title")}</h1>
     <div class="muted auth-hint">${t("demo.hint")}</div>
-    <div class="seg demo-langs">
-      ${Object.entries(LANGS).map(([code, l]) => html`<button type="button" class=${"seg-btn" + (code === lang ? " active" : "")} onClick=${() => choose(code)}>${l.name}</button>`)}
-    </div>
+    <${LangPicker} value=${lang} onChange=${pick} />
     ${error && html`<div class="auth-error">${error}</div>`}
     <button type="button" class="btn btn-primary" disabled=${busy} onClick=${start}>${busy ? t("demo.making") : t("demo.start")}</button>
     <div class="muted small auth-foot">${t("demo.note")}</div>

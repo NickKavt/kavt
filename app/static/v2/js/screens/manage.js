@@ -69,8 +69,7 @@ export function Settings() {
   const pick = code => {
     if (code === currentLang()) return;
     haptic();
-    setLang(code);
-    update({});
+    setLang(code).then(() => update({}));
   };
   const others = async () => {
     if (!(await ask(t("settings.confirmOthers")))) return;

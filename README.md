@@ -24,7 +24,7 @@ A self-hosted family budget. Install it with Docker, open it in a browser and ad
 - Exchange rates for the budget's main currency, on each operation's own day, from the Central Bank of Türkiye, the Bank of Russia, the ECB or currency-api; or off. Only then does the server contact the chosen source.
 - One budget for the family: the owner invites people with a one-time link, as members or admins.
 - Members and admins, plus sessions you can end from the app.
-- Interface in English, Russian and Turkish.
+- Interface in 15 languages: English, Spanish, Portuguese (Brazil), French, German, Italian, Polish, Turkish, Indonesian, Russian, Ukrainian, Belarusian, Hindi, Chinese (Simplified) and Japanese. It follows the browser's language, and a new budget names its categories and accounts in the language it was made in. Translations are welcome as issues or pull requests.
 - Phone layout, plus a side menu and two columns on wide screens.
 
 The server is written in Rust (axum, sqlx) and stores its data in PostgreSQL. The interface is plain ES modules with Preact and has no build step.
@@ -151,7 +151,7 @@ DATABASE_URL=postgresql://user:pass@localhost/budget TELEGRAM_BOT_TOKEN=... ./ta
 
 Or run `docker compose up -d --build` to build the image locally.
 
-`node tools/check-i18n.mjs` checks that every text has a translation in each language.
+`node tools/check-i18n.mjs` checks that every text has a translation in each language, with the plural forms that language needs. A new language is a file in `app/static/v2/js/locales/`, a line in `i18n.js`, rows in `NAMES` (`src/db.rs`) and `STORIES` (`src/demo.rs`), and a migration that allows its code in `budget_settings.lang`.
 
 | Path | Contents |
 |---|---|

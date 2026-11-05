@@ -3,7 +3,7 @@
 import { html, render, useEffect } from "../vendor/preact-htm.js";
 import { initTelegram, haptic } from "./tg.js";
 import { api, signIn } from "./api.js";
-import { t, errorText } from "./i18n.js";
+import { t, errorText, loadLang, currentLang } from "./i18n.js";
 import { state, update, useStore, toast } from "./store.js";
 import { startRouter, navigate, syncBack, back, TABS } from "./router.js";
 import { cachedHome, refresh } from "./data.js";
@@ -92,6 +92,7 @@ async function boot() {
   // An invitation link opens as #/invite/<token>; it is read before the router resets the address.
   const invite = /^#\/invite\/([0-9a-f]{16,})$/.exec(location.hash)?.[1];
   startRouter();
+  await loadLang(currentLang()).catch(() => {});
   render(html`<${App} />`, document.getElementById("app"));
   try {
     const server = await api("/api/setup").catch(() => ({}));

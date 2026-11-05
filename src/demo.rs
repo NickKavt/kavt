@@ -37,6 +37,8 @@ pub struct DemoIn {
 
 /// Names and money of a demo budget in one language.
 struct Story {
+    /// The budget's language, one of `db::LANGS`.
+    lang: &'static str,
     guest: &'static str,
     main: &'static str,
     /// One unit of `main` in dollars' worth, so amounts look ordinary in every currency.
@@ -67,31 +69,88 @@ struct Story {
     subscription: &'static str,
 }
 
-const EN: Story = Story {
-    guest: "Guest", main: "$", scale: 1.0, step: 0.01, rate_source: "ecb", second: "€", second_rate: 0.92,
-    card: "Card", cash: "Cash", second_card: "Euro card", trip: "Vacation", deposit: "Term deposit", deposit_rate: (4.5, 0.0),
-    salary: "Salary", side_job: "Freelance", supermarket: "Supermarket", market: "Farmers market", pharmacy: "Pharmacy",
-    rent: "Rent", utilities: "Utilities", cafe: "Cafe", cinema: "Cinema", transport: "Transport", subscription: "Streaming",
-};
-const RU: Story = Story {
-    guest: "Гость", main: "₽", scale: 90.0, step: 10.0, rate_source: "cbr", second: "$", second_rate: 1.0 / 90.0,
-    card: "Карта", cash: "Наличные", second_card: "Долларовая карта", trip: "Отпуск", deposit: "Вклад", deposit_rate: (18.0, 0.0),
-    salary: "Зарплата", side_job: "Подработка", supermarket: "Супермаркет", market: "Рынок", pharmacy: "Аптека",
-    rent: "Аренда", utilities: "Коммуналка", cafe: "Кафе", cinema: "Кино", transport: "Транспорт", subscription: "Подписки",
-};
-const TR: Story = Story {
-    guest: "Misafir", main: "₺", scale: 40.0, step: 5.0, rate_source: "tcmb", second: "€", second_rate: 1.0 / 45.0,
-    card: "Kart", cash: "Nakit", second_card: "Euro hesabı", trip: "Tatil", deposit: "Vadeli mevduat", deposit_rate: (40.0, 17.5),
-    salary: "Maaş", side_job: "Serbest iş", supermarket: "Süpermarket", market: "Pazar", pharmacy: "Eczane",
-    rent: "Kira", utilities: "Faturalar", cafe: "Kafe", cinema: "Sinema", transport: "Ulaşım", subscription: "Abonelikler",
-};
+/// In the order of `db::LANGS`.
+const STORIES: [Story; 15] = [
+    Story {
+        lang: "ru", guest: "Гость", main: "₽", scale: 90.0, step: 10.0, rate_source: "cbr", second: "$", second_rate: 1.0 / 90.0,
+        card: "Карта", cash: "Наличные", second_card: "Долларовая карта", trip: "Отпуск", deposit: "Вклад", deposit_rate: (18.0, 0.0),
+        salary: "Зарплата", side_job: "Подработка", supermarket: "Супермаркет", market: "Рынок", pharmacy: "Аптека", rent: "Аренда", utilities: "Коммуналка", cafe: "Кафе", cinema: "Кино", transport: "Транспорт", subscription: "Подписки",
+    },
+    Story {
+        lang: "en", guest: "Guest", main: "$", scale: 1.0, step: 0.01, rate_source: "ecb", second: "€", second_rate: 0.92,
+        card: "Card", cash: "Cash", second_card: "Euro card", trip: "Vacation", deposit: "Term deposit", deposit_rate: (4.5, 0.0),
+        salary: "Salary", side_job: "Freelance", supermarket: "Supermarket", market: "Farmers market", pharmacy: "Pharmacy", rent: "Rent", utilities: "Utilities", cafe: "Cafe", cinema: "Cinema", transport: "Transport", subscription: "Streaming",
+    },
+    Story {
+        lang: "tr", guest: "Misafir", main: "₺", scale: 40.0, step: 5.0, rate_source: "tcmb", second: "€", second_rate: 1.0 / 45.0,
+        card: "Kart", cash: "Nakit", second_card: "Euro hesabı", trip: "Tatil", deposit: "Vadeli mevduat", deposit_rate: (40.0, 17.5),
+        salary: "Maaş", side_job: "Serbest iş", supermarket: "Süpermarket", market: "Pazar", pharmacy: "Eczane", rent: "Kira", utilities: "Faturalar", cafe: "Kafe", cinema: "Sinema", transport: "Ulaşım", subscription: "Abonelikler",
+    },
+    Story {
+        lang: "es", guest: "Invitado", main: "€", scale: 0.92, step: 0.01, rate_source: "ecb", second: "$", second_rate: 1.0 / 0.92,
+        card: "Tarjeta", cash: "Efectivo", second_card: "Tarjeta en dólares", trip: "Vacaciones", deposit: "Depósito a plazo", deposit_rate: (2.5, 19.0),
+        salary: "Nómina", side_job: "Trabajos extra", supermarket: "Supermercado", market: "Mercado", pharmacy: "Farmacia", rent: "Alquiler", utilities: "Facturas", cafe: "Cafetería", cinema: "Cine", transport: "Transporte", subscription: "Suscripciones",
+    },
+    Story {
+        lang: "pt", guest: "Visitante", main: "BRL", scale: 5.5, step: 1.0, rate_source: "ecb", second: "$", second_rate: 1.0 / 5.5,
+        card: "Cartão", cash: "Dinheiro", second_card: "Cartão em dólar", trip: "Férias", deposit: "CDB", deposit_rate: (11.0, 22.5),
+        salary: "Salário", side_job: "Freela", supermarket: "Supermercado", market: "Feira", pharmacy: "Farmácia", rent: "Aluguel", utilities: "Contas da casa", cafe: "Café", cinema: "Cinema", transport: "Transporte", subscription: "Assinaturas",
+    },
+    Story {
+        lang: "fr", guest: "Invité", main: "€", scale: 0.92, step: 0.01, rate_source: "ecb", second: "$", second_rate: 1.0 / 0.92,
+        card: "Carte", cash: "Espèces", second_card: "Carte en dollars", trip: "Vacances", deposit: "Compte à terme", deposit_rate: (3.0, 30.0),
+        salary: "Salaire", side_job: "Missions freelance", supermarket: "Supermarché", market: "Marché", pharmacy: "Pharmacie", rent: "Loyer", utilities: "Charges", cafe: "Café", cinema: "Cinéma", transport: "Transports", subscription: "Abonnements",
+    },
+    Story {
+        lang: "de", guest: "Gast", main: "€", scale: 0.92, step: 0.01, rate_source: "ecb", second: "$", second_rate: 1.0 / 0.92,
+        card: "Girokarte", cash: "Bargeld", second_card: "Dollarkarte", trip: "Urlaub", deposit: "Festgeld", deposit_rate: (3.0, 26.375),
+        salary: "Gehalt", side_job: "Nebenjob", supermarket: "Supermarkt", market: "Wochenmarkt", pharmacy: "Apotheke", rent: "Miete", utilities: "Nebenkosten", cafe: "Café", cinema: "Kino", transport: "ÖPNV", subscription: "Abos",
+    },
+    Story {
+        lang: "it", guest: "Ospite", main: "€", scale: 0.92, step: 0.01, rate_source: "ecb", second: "$", second_rate: 1.0 / 0.92,
+        card: "Carta", cash: "Contanti", second_card: "Carta in dollari", trip: "Vacanze", deposit: "Conto deposito", deposit_rate: (3.0, 26.0),
+        salary: "Stipendio", side_job: "Lavoretti", supermarket: "Supermercato", market: "Mercato", pharmacy: "Farmacia", rent: "Affitto", utilities: "Bollette", cafe: "Bar", cinema: "Cinema", transport: "Trasporti", subscription: "Abbonamenti",
+    },
+    Story {
+        lang: "pl", guest: "Gość", main: "PLN", scale: 4.0, step: 1.0, rate_source: "ecb", second: "€", second_rate: 1.0 / 4.3,
+        card: "Karta", cash: "Gotówka", second_card: "Karta w euro", trip: "Wakacje", deposit: "Lokata", deposit_rate: (5.5, 19.0),
+        salary: "Wynagrodzenie", side_job: "Zlecenia", supermarket: "Supermarket", market: "Targ", pharmacy: "Apteka", rent: "Czynsz", utilities: "Rachunki", cafe: "Kawiarnia", cinema: "Kino", transport: "Komunikacja", subscription: "Subskrypcje",
+    },
+    Story {
+        lang: "uk", guest: "Гість", main: "UAH", scale: 41.0, step: 10.0, rate_source: "fawaz", second: "$", second_rate: 1.0 / 41.0,
+        card: "Картка", cash: "Готівка", second_card: "Доларова картка", trip: "Відпустка", deposit: "Депозит", deposit_rate: (14.0, 23.0),
+        salary: "Зарплата", side_job: "Підробіток", supermarket: "Супермаркет", market: "Ринок", pharmacy: "Аптека", rent: "Оренда", utilities: "Комуналка", cafe: "Кав’ярня", cinema: "Кіно", transport: "Транспорт", subscription: "Підписки",
+    },
+    Story {
+        lang: "be", guest: "Госць", main: "BYN", scale: 3.3, step: 1.0, rate_source: "fawaz", second: "$", second_rate: 1.0 / 3.3,
+        card: "Картка", cash: "Наяўныя", second_card: "Даляравая картка", trip: "Адпачынак", deposit: "Дэпазіт", deposit_rate: (10.0, 0.0),
+        salary: "Заробак", side_job: "Падпрацоўка", supermarket: "Супермаркет", market: "Рынак", pharmacy: "Аптэка", rent: "Арэнда", utilities: "Камуналка", cafe: "Кавярня", cinema: "Кіно", transport: "Транспарт", subscription: "Падпіскі",
+    },
+    Story {
+        lang: "zh", guest: "访客", main: "CNY", scale: 7.2, step: 1.0, rate_source: "ecb", second: "$", second_rate: 1.0 / 7.2,
+        card: "银行卡", cash: "现金", second_card: "美元卡", trip: "旅行", deposit: "定期存款", deposit_rate: (1.5, 0.0),
+        salary: "工资", side_job: "兼职", supermarket: "超市", market: "菜市场", pharmacy: "药店", rent: "房租", utilities: "水电燃气", cafe: "咖啡馆", cinema: "电影", transport: "交通", subscription: "会员订阅",
+    },
+    Story {
+        lang: "ja", guest: "ゲスト", main: "JPY", scale: 150.0, step: 10.0, rate_source: "ecb", second: "$", second_rate: 1.0 / 150.0,
+        card: "カード", cash: "現金", second_card: "ドル口座", trip: "旅行", deposit: "定期預金", deposit_rate: (0.3, 20.315),
+        salary: "給料", side_job: "副業", supermarket: "スーパー", market: "市場", pharmacy: "薬局", rent: "家賃", utilities: "光熱費", cafe: "カフェ", cinema: "映画", transport: "交通費", subscription: "サブスク",
+    },
+    Story {
+        lang: "hi", guest: "अतिथि", main: "INR", scale: 84.0, step: 10.0, rate_source: "ecb", second: "$", second_rate: 1.0 / 84.0,
+        card: "कार्ड", cash: "नकद", second_card: "डॉलर कार्ड", trip: "छुट्टियाँ", deposit: "सावधि जमा", deposit_rate: (7.0, 10.0),
+        salary: "वेतन", side_job: "फ्रीलांस", supermarket: "सुपरमार्केट", market: "सब्ज़ी मंडी", pharmacy: "दवाखाना", rent: "किराया", utilities: "बिजली-पानी", cafe: "कैफ़े", cinema: "सिनेमा", transport: "आना-जाना", subscription: "सब्सक्रिप्शन",
+    },
+    Story {
+        lang: "id", guest: "Tamu", main: "IDR", scale: 16000.0, step: 1000.0, rate_source: "ecb", second: "$", second_rate: 1.0 / 16000.0,
+        card: "Kartu debit", cash: "Tunai", second_card: "Kartu dolar", trip: "Liburan", deposit: "Deposito", deposit_rate: (4.0, 20.0),
+        salary: "Gaji", side_job: "Kerja sampingan", supermarket: "Supermarket", market: "Pasar", pharmacy: "Apotek", rent: "Sewa", utilities: "Tagihan", cafe: "Kafe", cinema: "Bioskop", transport: "Transportasi", subscription: "Langganan",
+    },
+];
 
+/// The English one for a language without a story.
 fn story(lang: &str) -> &'static Story {
-    match lang {
-        "ru" => &RU,
-        "tr" => &TR,
-        _ => &EN,
-    }
+    STORIES.iter().find(|s| s.lang == lang).unwrap_or(&STORIES[1])
 }
 
 /// A small deterministic generator, so a budget's numbers vary but need no extra crate state.
@@ -201,8 +260,7 @@ struct Seeded {
 }
 
 fn names_of(s: &Story) -> Seeded {
-    let lang = if std::ptr::eq(s, &RU) { "ru" } else if std::ptr::eq(s, &TR) { "tr" } else { "en" };
-    let n = db::names(lang);
+    let n = db::names(s.lang);
     Seeded { income: n.income, groceries: n.expenses[0].0, health: n.expenses[1].0, home: n.expenses[2].0, fun: n.expenses[3].0, other: n.expenses[4].0 }
 }
 
@@ -375,7 +433,9 @@ mod tests {
     fn a_story_in_every_language_balances() {
         let start = NaiveDate::from_ymd_opt(2026, 9, 1).unwrap();
         let today = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
-        for s in [&EN, &RU, &TR] {
+        for (s, lang) in STORIES.iter().zip(db::LANGS) {
+            assert_eq!(s.lang, lang);
+            assert!(rows(s, start, today, &mut Dice(42)).iter().all(|r| r.amount >= s.step.min(1.0)), "{lang}: an amount rounds to nothing");
             let rows = rows(s, start, today, &mut Dice(42));
             assert!(rows.len() > 60, "{} rows", rows.len());
             assert!(rows.iter().all(|r| r.amount > 0.0 && r.date <= today));
