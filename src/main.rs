@@ -8,6 +8,7 @@ mod accounts;
 mod auth;
 mod db;
 mod demo;
+mod forecast;
 mod limit;
 mod local;
 mod import;
@@ -365,14 +366,61 @@ async fn home(State(state): AppRef, headers: HeaderMap, Query(q): Query<MonthQue
     // listing the accounts brings their interest up to date (once).
     recurring::sync_budget(&state.db, budget).await?;
     let accounts = accounts::list(&state.db, budget, q.today).await?;
+    let settings = rates::settings(&state.db, budget).await?;
+    let mut categories = db::list_categories(&state.db, budget, Some(&month)).await?;
+    let summary = db::month_summary(&state.db, budget, &month).await?;
+    // The forecast is for the month that is going on, by the person's today.
+    let today = q.today.unwrap_or_else(|| Utc::now().date_naive());
+    let (forecast, expected) = if db::month_bounds(today).0 == month.0 {
+        let (f, e) = forecast::load(&state.db, budget, today, &summary.balance).await?;
+        (Some(f), e)
+    } else {
+        (None, Default::default())
+    };
+    count_limits(&state, &settings, &mut categories, &expected).await;
     Ok(Json(json!({
-        "categories": db::list_categories(&state.db, budget, Some(&month)).await?,
+        "categories": categories,
         "chart": db::stats_by_category(&state.db, budget, &month).await?,
-        "month_summary": db::month_summary(&state.db, budget, &month).await?,
+        "month_summary": summary,
+        "forecast": forecast,
         "savings_summary": db::savings_summary(&state.db, budget, &month.1).await?,
-        "settings": rates::settings(&state.db, budget).await?,
+        "settings": settings,
         "accounts": accounts,
     })))
+}
+
+/// Spending against each monthly limit, in the limit's currency. Other currencies are
+/// converted by today's rates of the budget's source (the fallback source for what it lacks);
+/// rates are only asked for when such spending exists, and not waited on for long.
+/// With `expected` (spending still to come by root category and currency), also the
+/// month's expected spending against each limit.
+async fn count_limits(state: &AppState, settings: &rates::Settings, cats: &mut [db::CategoryOut], expected: &std::collections::HashMap<(i64, String), f64>) {
+    let mut sources: Vec<rates::Rates> = Vec::new();
+    let foreign_expected = cats.iter().any(|c| {
+        c.limit_amount.is_some() && expected.iter().any(|((id, cur), v)| *id == c.id && *v > 0.0 && Some(cur.as_str()) != c.limit_currency.as_deref())
+    });
+    if db::limit_foreign(cats) || foreign_expected {
+        let chosen = rates::source_name(&settings.rate_source).unwrap_or("tcmb");
+        for source in [chosen, rates::FALLBACK] {
+            if let Ok(Ok(r)) = tokio::time::timeout(std::time::Duration::from_secs(3), state.rates.get(source)).await {
+                sources.push(r);
+            }
+        }
+    }
+    let rate = |from: &str, to: &str| sources.iter().find_map(|r| rates::convert(r, from, to));
+    db::count_limits(cats, rate);
+    if expected.is_empty() {
+        return;
+    }
+    for c in cats.iter_mut() {
+        let (Some(spent), Some(cur)) = (c.limit_spent, c.limit_currency.as_deref()) else { continue };
+        let more: f64 = expected
+            .iter()
+            .filter(|((id, _), _)| *id == c.id)
+            .filter_map(|((_, from), v)| if from == cur { Some(*v) } else { rate(from, cur).map(|r| v * r) })
+            .sum();
+        c.limit_forecast = Some(((spent + more) * 100.0).round() / 100.0);
+    }
 }
 
 async fn list_categories(State(state): AppRef, headers: HeaderMap) -> ApiResult<Json<Vec<db::CategoryOut>>> {
@@ -403,18 +451,58 @@ async fn savings_summary(State(state): AppRef, headers: HeaderMap, Query(q): Que
 struct ReportQuery {
     from: NaiveDate,
     to: NaiveDate,
+    /// The period to compare with (the app picks it: the month before, up to the same day).
+    cmp_from: Option<NaiveDate>,
+    cmp_to: Option<NaiveDate>,
+}
+
+fn check_period(from: NaiveDate, to: NaiveDate) -> ApiResult<()> {
+    if from > to {
+        return Err(ApiError::status(400, "Начало периода позже конца"));
+    }
+    if (to - from).num_days() > 3700 {
+        return Err(ApiError::status(400, "Период больше 10 лет"));
+    }
+    Ok(())
 }
 
 /// Operations of any period, both ends included, for the reports screen.
 async fn report(State(state): AppRef, headers: HeaderMap, Query(q): Query<ReportQuery>) -> ApiResult<Json<db::Report>> {
     let me = user(&state, &headers).await?;
-    if q.from > q.to {
-        return Err(ApiError::status(400, "Начало периода позже конца"));
+    check_period(q.from, q.to)?;
+    let mut report = db::report(&state.db, me.budget_owner_id, q.from, q.to).await?;
+    if let (Some(from), Some(to)) = (q.cmp_from, q.cmp_to) {
+        check_period(from, to)?;
+        report.compare = Some(db::compare(&state.db, me.budget_owner_id, from, to).await?);
     }
-    if (q.to - q.from).num_days() > 3700 {
-        return Err(ApiError::status(400, "Период больше 10 лет"));
-    }
-    Ok(Json(db::report(&state.db, me.budget_owner_id, q.from, q.to).await?))
+    Ok(Json(report))
+}
+
+#[derive(Deserialize)]
+struct SearchQuery {
+    q: String,
+    from: Option<NaiveDate>,
+    to: Option<NaiveDate>,
+}
+
+/// At most this many operations come back from a search.
+const SEARCH_LIMIT: i64 = 200;
+
+/// Operations by words in their note or category, or by amount, in all time or a period.
+async fn search(State(state): AppRef, headers: HeaderMap, Query(q): Query<SearchQuery>) -> ApiResult<Json<serde_json::Value>> {
+    let me = user(&state, &headers).await?;
+    let Some(what) = db::parse_search(&q.q) else { return Ok(Json(json!({ "transactions": [], "more": false }))) };
+    let period = match (q.from, q.to) {
+        (Some(f), Some(t)) => {
+            check_period(f, t)?;
+            Some((f, t))
+        }
+        _ => None,
+    };
+    let mut found = db::search(&state.db, me.budget_owner_id, &what, period, SEARCH_LIMIT + 1).await?;
+    let more = found.len() as i64 > SEARCH_LIMIT;
+    found.truncate(SEARCH_LIMIT as usize);
+    Ok(Json(json!({ "transactions": found, "more": more })))
 }
 
 async fn category_details(
@@ -438,6 +526,7 @@ async fn category_details(
     Ok(Json(json!({
         "id": cat.id, "name": cat.name, "emoji": cat.emoji, "color": cat.color, "type": cat.kind,
         "total": total, "totals_by_currency": totals, "target_amount": cat.target_amount,
+        "limit_amount": cat.limit_amount, "limit_currency": cat.limit_currency,
         "subcategories": subcategories,
         "transactions": db::category_transactions(&state.db, &cat.kind, &listed, &month).await?,
     })))
@@ -451,6 +540,25 @@ struct CategoryCreate {
     #[serde(rename = "type")]
     kind: Option<String>,
     target_amount: Option<f64>,
+    limit: Option<LimitIn>,
+}
+
+/// A monthly limit as the app sends it: no amount (or 0) removes the limit.
+#[derive(Deserialize)]
+struct LimitIn {
+    amount: Option<f64>,
+    currency: Option<String>,
+}
+
+/// The limit to store: both columns set, or both empty. Only expense categories have one.
+fn category_limit(kind: &str, l: &LimitIn) -> ApiResult<(Option<f64>, Option<String>)> {
+    let Some(amount) = l.amount.filter(|a| *a != 0.0) else { return Ok((None, None)) };
+    if kind != "expense" {
+        return Err(ApiError::status(400, "Лимит бывает только у расходов"));
+    }
+    let currency = l.currency.as_deref().unwrap_or("");
+    check_amount(amount, currency)?;
+    Ok((Some(amount), Some(rates::symbol(currency))))
 }
 
 async fn create_category(State(state): AppRef, headers: HeaderMap, Json(c): Json<CategoryCreate>) -> ApiResult<Json<db::CategoryOut>> {
@@ -474,8 +582,14 @@ async fn create_category(State(state): AppRef, headers: HeaderMap, Json(c): Json
             return Err(ApiError::status(400, "Такая категория уже есть"));
         }
     }
-    let id: i64 = sqlx::query_scalar("INSERT INTO categories (name, emoji, color, type, target_amount, budget_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id")
-        .bind(c.name.trim()).bind(&c.emoji).bind(&c.color).bind(kind).bind(c.target_amount).bind(budget)
+    let (limit_amount, limit_currency) = match &c.limit {
+        Some(l) => category_limit(kind, l)?,
+        None => (None, None),
+    };
+    let id: i64 = sqlx::query_scalar(
+        "INSERT INTO categories (name, emoji, color, type, target_amount, budget_id, limit_amount, limit_currency) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+    )
+        .bind(c.name.trim()).bind(&c.emoji).bind(&c.color).bind(kind).bind(c.target_amount).bind(budget).bind(limit_amount).bind(limit_currency)
         .fetch_one(&state.db)
         .await?;
     Ok(Json(db::category_out_all_time(&state.db, budget, id).await?.ok_or(ApiError::Db(sqlx::Error::RowNotFound))?))
@@ -487,13 +601,20 @@ struct CategoryUpdate {
     emoji: Option<String>,
     color: Option<String>,
     target_amount: Option<f64>,
+    /// Absent keeps the limit as it is, so an older page that doesn't know limits keeps them.
+    limit: Option<LimitIn>,
 }
 
 async fn update_category(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64>, Json(c): Json<CategoryUpdate>) -> ApiResult<Json<db::CategoryOut>> {
     let me = user(&state, &headers).await?;
     let budget = me.budget_owner_id;
-    if db::root_category_row(&state.db, budget, id).await?.is_none() {
-        return Err(not_found_category());
+    let cat = db::root_category_row(&state.db, budget, id).await?.ok_or_else(not_found_category)?;
+    if let Some(l) = &c.limit {
+        let (amount, currency) = category_limit(&cat.kind, l)?;
+        sqlx::query("UPDATE categories SET limit_amount = $1, limit_currency = $2 WHERE id = $3")
+            .bind(amount).bind(currency).bind(id)
+            .execute(&state.db)
+            .await?;
     }
     sqlx::query("UPDATE categories SET name = COALESCE($1, name), emoji = COALESCE($2, emoji), color = COALESCE($3, color), target_amount = $4 WHERE id = $5")
         .bind(&c.name).bind(&c.emoji).bind(&c.color).bind(c.target_amount).bind(id)
@@ -604,6 +725,9 @@ async fn get_settings(State(state): AppRef, headers: HeaderMap) -> ApiResult<Jso
 #[derive(Deserialize)]
 struct GoalIn {
     savings_goal: Option<f64>,
+    /// The month to reach it in; absent keeps it, null removes it.
+    #[serde(default, deserialize_with = "accounts::present")]
+    goal_date: Option<Option<NaiveDate>>,
 }
 
 /// The budget's savings goal, for admins.
@@ -612,7 +736,7 @@ async fn put_goal(State(state): AppRef, headers: HeaderMap, Json(g): Json<GoalIn
     if g.savings_goal.is_some_and(|v| !v.is_finite() || !(0.0..=1e12).contains(&v)) {
         return Err(ApiError::status(400, "Сумма должна быть больше нуля"));
     }
-    rates::save_goal(&state.db, me.budget_owner_id, g.savings_goal).await?;
+    rates::save_goal(&state.db, me.budget_owner_id, g.savings_goal, g.goal_date).await?;
     Ok(ok())
 }
 
@@ -1340,6 +1464,7 @@ fn app(state: Arc<AppState>) -> Router {
                 .route_layer(from_fn_with_state(leak(Limiter::new(3, Duration::from_secs(3))), limit::limit)),
         )
         .route("/api/report", get(report).route_layer(from_fn_with_state(report_limit, limit::limit)))
+        .route("/api/search", get(search).route_layer(from_fn_with_state(report_limit, limit::limit)))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{suffix}", delete(delete_session))
         .route("/api/perf/startup", post(perf_startup))

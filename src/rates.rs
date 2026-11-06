@@ -6,7 +6,7 @@
 
 use std::{collections::HashMap, sync::Mutex, time::{Duration, Instant}};
 
-use chrono::{NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use serde::Serialize;
 use sqlx::PgPool;
 
@@ -401,12 +401,16 @@ fn parse_fawaz(json: &str) -> Option<Rates> {
 }
 
 /// The budget's savings goal; `None` or 0 removes it.
-pub async fn save_goal(db: &PgPool, budget: i64, goal: Option<f64>) -> sqlx::Result<()> {
+/// The goal, and its month when `date` is given (`Some(None)` removes it). No goal, no month.
+pub async fn save_goal(db: &PgPool, budget: i64, goal: Option<f64>, date: Option<Option<NaiveDate>>) -> sqlx::Result<()> {
+    let goal = goal.filter(|g| *g > 0.0);
+    let date = if goal.is_none() { Some(None) } else { date };
     sqlx::query(
-        "INSERT INTO budget_settings (budget_id, savings_goal) VALUES ($1, $2)
-         ON CONFLICT (budget_id) DO UPDATE SET savings_goal = $2",
+        "INSERT INTO budget_settings (budget_id, savings_goal, savings_goal_date) VALUES ($1, $2, $4)
+         ON CONFLICT (budget_id) DO UPDATE SET savings_goal = $2,
+             savings_goal_date = CASE WHEN $3 THEN $4 ELSE budget_settings.savings_goal_date END",
     )
-    .bind(budget).bind(goal.filter(|g| *g > 0.0))
+    .bind(budget).bind(goal).bind(date.is_some()).bind(date.flatten().and_then(|d| d.with_day(1)).map(|d| d.to_string()))
     .execute(db)
     .await?;
     Ok(())

@@ -21,6 +21,8 @@ const MIGRATIONS: &[(i64, &str, &str)] = &[
     (10, "term deposit return", include_str!("../migrations/0010_term_return.sql")),
     (11, "budget language", include_str!("../migrations/0011_budget_lang.sql")),
     (12, "more budget languages", include_str!("../migrations/0012_more_langs.sql")),
+    (13, "category limits", include_str!("../migrations/0013_category_limits.sql")),
+    (14, "goal dates", include_str!("../migrations/0014_goal_dates.sql")),
 ];
 
 /// Any number; two servers starting on one database wait for each other on it.

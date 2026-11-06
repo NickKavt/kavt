@@ -195,9 +195,17 @@ function CategoryEditor({ id }) {
   const [name, setName] = useState(existing?.name || "");
   const [emoji, setEmoji] = useState(existing?.emoji || "🛒");
   const [color, setColor] = useState(existing?.color || COLORS[0]);
+  const hasLimit = !existing || existing.type === "expense";
+  const [limit, setLimit] = useState(existing?.limit_amount > 0 ? String(existing.limit_amount).replace(".", ",") : "");
+  const [limitCur, setLimitCur] = useState(existing?.limit_currency || state.home?.settings?.main_currency || lastCurrency());
   const save = async () => {
     if (!name.trim()) return tell(t("err.emptyName"));
     const body = { name: name.trim(), emoji: emoji.trim() || "🛒", color };
+    if (hasLimit) {
+      const v = limit.trim() ? evalAmount(limit) : null;
+      if (v !== null && !(v > 0)) return tell(t("form.enterAmount"));
+      body.limit = { amount: v, currency: limitCur };
+    }
     // The server replaces the goal with what is sent, so the current one is kept.
     const ok = await attempt(
       () => existing ? data.updateCategory(id, { ...body, target_amount: existing.target_amount ?? null }) : data.createCategory(body),
@@ -230,6 +238,8 @@ function CategoryEditor({ id }) {
         ${[...new Set([...COLORS, color])].map(c => html`<button type="button" class=${"color-dot" + (c === color ? " active" : "")}
           style=${`background:${c}`} onClick=${() => setColor(c)} aria-label=${c}></button>`)}
       </div>
+      ${hasLimit && html`<div class="muted small">${t("catEdit.limit")}</div>
+        <${MoneyField} value=${limit} onInput=${setLimit} currency=${limitCur} onCurrency=${setLimitCur} onEnter=${save} />`}
       <button type="button" class="btn btn-primary" onClick=${save}>${existing ? t("common.save") : t("catEdit.create")}</button>
     </div>
     ${existing && html`<div class="section-title">${t("sub.title")}</div>

@@ -9,7 +9,7 @@ import { evalAmount } from "../calc.js";
 import { haptic, tell, tg } from "../tg.js";
 import { back } from "../router.js";
 import { MoneyField, DateField, Chips, Seg, Empty, lastCurrency, rememberCurrency } from "../ui.js";
-import { MonthBar } from "./home.js";
+import { MonthBar, limitState } from "./home.js";
 import { AccountPicker, everydayAccounts, defaultAccount, rememberAccount, accountLabel, BeforeStart } from "./accounts.js";
 
 /** Marks the savings starting balance; the server leaves it out of month balances. */
@@ -195,6 +195,24 @@ export function OperationList({ ops, onOpen, showCategory, fallbackTitle = "" })
   </div>`;
 }
 
+/** The month against the category's limit: what is left and, this month, how much a day. */
+function LimitCard({ category, month }) {
+  const l = limitState(category);
+  if (!l) return null;
+  const now = today();
+  const days = sameMonth(month, now) ? new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate() - now.getDate() + 1 : 0;
+  return html`<div class="limit-card">
+    <div class="limit-card-line">
+      <span>${t("limit.of", { spent: money(l.spent, l.cur), limit: money(l.limit, l.cur) })}</span>
+      <span class=${"limit-text-" + l.level}>${l.level === "over" ? t("limit.over", { sum: money(-l.left, l.cur) }) : t("limit.left", { sum: money(l.left, l.cur) })}</span>
+    </div>
+    <span class="cat-bar"><span class=${"limit-" + l.level} style=${`width:${Math.min(l.ratio, 1) * 100}%;${l.level === "ok" ? `background:${category.color}` : ""}`}></span></span>
+    ${days > 0 && l.left > 0 && html`<div class="muted small">${t("limit.perDay", { sum: money(Math.floor(l.left / days), l.cur) })}</div>`}
+    ${l.expected && l.level !== "over" && html`<div class="small limit-text-warn">${t("limit.pace", { sum: money(l.expected, l.cur), over: money(l.expected - l.limit, l.cur) })}</div>`}
+    ${l.partial && html`<div class="muted small">${t("limit.partial")}</div>`}
+  </div>`;
+}
+
 /** A percent as people write it: 17,5 rather than 17.500. */
 export function pct(v) {
   return Number(v || 0).toLocaleString(locale(), { maximumFractionDigits: 3 });
@@ -229,6 +247,7 @@ export function Category({ id }) {
       ${category.type !== "savings" && html`<span class="cat-amounts">${(used.length ? used : [lastCurrency()]).map(c => html`<span>${money(totals?.[c] || 0, c)}</span>`)}</span>`}
     </div>
     <${MonthBar} />
+    ${category.type === "expense" && html`<${LimitCard} category=${category} month=${s.month} />`}
     <${AddForm} category=${category} details=${details} />
     ${opsCurrencies.map(c => html`<${Breakdown} details=${details} currency=${c} />`)}
     <div class="section-title">${t("cat.operations", { n: ops.length })}</div>

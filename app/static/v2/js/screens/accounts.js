@@ -5,7 +5,7 @@
 
 import { html, useEffect, useState } from "../../vendor/preact-htm.js";
 import { t, errorText, locale } from "../i18n.js";
-import { money, ymd, today, dayTitle, parseYmd } from "../format.js";
+import { money, ymd, today, dayTitle, parseYmd, monthTitle, sameMonth } from "../format.js";
 import { state, useStore, openSheet, closeSheet, toast } from "../store.js";
 import * as data from "../data.js";
 import { api } from "../api.js";
@@ -149,6 +149,41 @@ export function AccountsCard() {
 }
 
 /**
+ * How to reach a goal by its month: what to put aside each month, counting this one and the
+ * goal's own. `thisMonth` is what was put aside this month already, so a month paid ahead shows.
+ */
+export function goalPlan({ target, saved, date, thisMonth = 0, now = today() }) {
+  if (!(target > 0) || !date) return null;
+  const left = target - saved;
+  if (left <= 0.005) return { reached: true };
+  const d = parseYmd(date);
+  const months = (d.getFullYear() - now.getFullYear()) * 12 + d.getMonth() - now.getMonth() + 1;
+  if (months <= 0) return { late: true, left };
+  const perMonth = Math.ceil(Math.max(0, left + thisMonth) / months);
+  return { perMonth, months, date, thisMonth, ahead: thisMonth > 0 && thisMonth >= perMonth };
+}
+
+/** "By June 2027: put aside 37 500 ₽ a month", or that it is reached or late. */
+function GoalPlan({ plan, currency }) {
+  if (!plan) return null;
+  if (plan.reached) return html`<div class="small goal-plan goal-ok">${t("savings.reached")}</div>`;
+  if (plan.late) return html`<div class="small goal-plan goal-late">${t("savings.late", { sum: money(plan.left, currency) })}</div>`;
+  return html`<div class="small goal-plan">
+    ${t("savings.plan", { date: monthTitle(parseYmd(plan.date)), sum: money(plan.perMonth, currency) })}
+    ${plan.ahead && html`<div class="goal-ok">${t("savings.ahead", { sum: money(plan.thisMonth, currency) })}</div>`}
+  </div>`;
+}
+
+/** The month field of a goal: empty means no date. */
+function GoalMonth({ value, onChange }) {
+  return html`<label class="date-row">
+    <span class="date-label">📅 ${t("savings.goalDate")}</span>
+    <input type="month" class="field date-input" value=${value} min=${ymd(today()).slice(0, 7)} onChange=${e => onChange(e.currentTarget.value)} />
+    ${value && html`<button type="button" class="link-btn" onClick=${e => { e.preventDefault(); onChange(""); }}>${t("savings.noDate")}</button>`}
+  </label>`;
+}
+
+/**
  * Savings on the home screen: the total against the budget's goal, then each savings account
  * with its balance, its own goal and interest. "Put aside" is a transfer into one of them.
  */
@@ -170,6 +205,9 @@ export function SavingsCard() {
     ${goal && html`<div class="savings-goal">
       <div class="bar bar-big"><span style=${`width:${Math.min(100, sum.progress_percent)}%`}></span></div>
       <div class="muted small">${t("savings.goalLine", { goal: money(sum.target_amount, sum.currency), left: money(sum.remaining_amount, sum.currency), pct: Math.round(sum.progress_percent) })}</div>
+      ${sameMonth(s.month, today()) && html`<${GoalPlan} currency=${sum.currency} plan=${goalPlan({
+        target: sum.target_amount, saved: sum.saved_amount, date: sum.target_date, thisMonth: s.home?.month_summary?.saved?.[sum.currency] || 0,
+      })} />`}
     </div>`}
     ${isAdmin && html`<button type="button" class="link-btn savings-goal-btn" onClick=${() => openSheet("savingsGoal", {})}>🎯 ${goal ? t("savings.changeGoal") : t("savings.setGoal")}</button>`}
     ${list.map(a => html`<button type="button" key=${a.id} class="row savings-row" onClick=${() => openSheet("accountView", { id: a.id })}>
@@ -190,8 +228,9 @@ function SavingsGoalSheet() {
   const s = useStore();
   const sum = s.home?.savings_summary;
   const [amount, setAmount] = useState(sum?.target_amount > 0 ? String(sum.target_amount).replace(".", ",") : "");
+  const [month, setMonth] = useState(sum?.target_date?.slice(0, 7) || "");
   const save = async value => {
-    if (await attempt(() => data.saveSavingsGoal(value), t("savings.goalSaved"))) {
+    if (await attempt(() => data.saveSavingsGoal(value, value && month ? `${month}-01` : null), t("savings.goalSaved"))) {
       closeSheet();
       data.refresh();
     }
@@ -200,6 +239,7 @@ function SavingsGoalSheet() {
     <div class="muted small">${t("savings.goalHint")}</div>
     <div class="form">
       <${MoneyField} value=${amount} onInput=${setAmount} currency=${sum?.currency || ""} onCurrency=${() => {}} locked autofocus onEnter=${() => save(evalAmount(amount))} />
+      <${GoalMonth} value=${month} onChange=${setMonth} />
       <button type="button" class="btn btn-primary" onClick=${() => { const v = evalAmount(amount); if (!(v > 0)) return tell(t("form.enterAmount")); save(v); }}>${t("common.save")}</button>
       ${sum?.target_amount > 0 && html`<button type="button" class="btn btn-danger" onClick=${() => save(null)}>${t("savings.removeGoal")}</button>`}
     </div>
@@ -255,6 +295,7 @@ function MoneyAccount({ account, kind: startKind }) {
   const [kind, setKind] = useState(account?.kind || startKind || "regular");
   const savings = kind === "savings";
   const [target, setTarget] = useState(account?.target_amount > 0 ? String(account.target_amount).replace(".", ",") : "");
+  const [targetMonth, setTargetMonth] = useState(account?.target_date?.slice(0, 7) || "");
   // Interest of a savings account (src/savings.rs).
   const i = account?.interest;
   const [earns, setEarns] = useState(!!i);
@@ -316,7 +357,8 @@ function MoneyAccount({ account, kind: startKind }) {
         start: istart, rate_from: rateChanged ? rateFrom : null, renew: !ends, payout_account_id: ends ? payout?.id ?? null : null,
       };
     }
-    return { name: name.trim(), emoji, currency, owner_id: owner, initial_amount: v, initial_date: from || null, archived, kind, target_amount: savings && goal > 0 ? goal : null, interest };
+    return { name: name.trim(), emoji, currency, owner_id: owner, initial_amount: v, initial_date: from || null, archived, kind, target_amount: savings && goal > 0 ? goal : null,
+      target_date: savings && goal > 0 && targetMonth ? `${targetMonth}-01` : null, interest };
   };
   const save = async () => {
     if (!name.trim()) return tell(t("err.emptyName"));
@@ -393,6 +435,7 @@ function MoneyAccount({ account, kind: startKind }) {
       <div class="muted small">${moving ? t("accounts.moveHint") : from ? t("accounts.startHint", { date: dayTitle(parseYmd(from)) }) : t("accounts.startHintAll")}</div>
       ${savings && html`<div class="muted small">${t("savings.accountGoal")}</div>
         <${MoneyField} value=${target} onInput=${setTarget} currency=${currency} onCurrency=${() => {}} locked />
+        ${target.trim() && html`<${GoalMonth} value=${targetMonth} onChange=${setTargetMonth} />`}
         <label class="date-row switch-row" onClick=${() => { haptic(); setEarns(!earns); }}>
           <span class="date-label">💹 ${t("savings.earns")}</span>
           <span class=${"switch" + (earns ? " on" : "")}></span>
@@ -463,6 +506,7 @@ function AccountView({ id }) {
     ${a.target_amount > 0 && html`<div class="savings-goal">
       <div class="bar bar-big"><span style=${`width:${Math.min(100, Math.max(0, (a.balance / a.target_amount) * 100))}%`}></span></div>
       <div class="muted small">${t("savings.goalLine", { goal: money(a.target_amount, a.currency), left: money(Math.max(0, a.target_amount - a.balance), a.currency), pct: Math.round(Math.max(0, (a.balance / a.target_amount) * 100)) })}</div>
+      <${GoalPlan} currency=${a.currency} plan=${goalPlan({ target: a.target_amount, saved: a.balance, date: a.target_date })} />
     </div>`}
     ${a.interest && html`<div class="card interest-card">
       <div class="in-main-row"><span>${a.interest.kind === "term" ? t("acc.term") : t("acc.flexible")}</span><b>${pctShow(a.interest.rate)}%${a.interest.tax ? html`<span class="muted small"> · ${t("acc.tax")} ${pctShow(a.interest.tax)}%</span>` : ""}</b></div>

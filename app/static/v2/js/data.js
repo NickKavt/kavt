@@ -97,10 +97,13 @@ export const deleteSubcategory = id => api(`/api/subcategories/${id}`, { method:
 
 
 export const savePrefs = prefs => api("/api/me/prefs", { method: "PUT", body: prefs });
-export const saveSavingsGoal = goal => api("/api/settings/goal", { method: "PUT", body: { savings_goal: goal } });
+export const saveSavingsGoal = (goal, date) => api("/api/settings/goal", { method: "PUT", body: { savings_goal: goal, goal_date: date } });
 export const saveSettings = settings => api("/api/settings", { method: "PUT", body: settings });
 
-export const loadReport = (from, to) => api(`/api/report?from=${ymd(from)}&to=${ymd(to)}`);
+export const loadReport = (from, to, cmp) =>
+  api(`/api/report?from=${ymd(from)}&to=${ymd(to)}` + (cmp ? `&cmp_from=${ymd(cmp[0])}&cmp_to=${ymd(cmp[1])}` : ""));
+export const search = (q, period) =>
+  api(`/api/search?q=${encodeURIComponent(q)}` + (period ? `&from=${ymd(period[0])}&to=${ymd(period[1])}` : ""));
 
 export const loadUsers = () => api("/api/users");
 export const loadInvites = () => api("/api/invites");

@@ -7,7 +7,7 @@
 //! An account's balance is its starting amount plus everything dated from its starting day
 //! up to today. Savings accounts with interest live in src/savings.rs; the app lists both.
 
-use chrono::{NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Row};
 
@@ -33,6 +33,8 @@ pub struct AccountOut {
     pub kind: String,
     /// A savings account's own goal, in its currency.
     pub target_amount: Option<f64>,
+    /// The month the goal is meant to be reached in, `YYYY-MM-01`.
+    pub target_date: Option<String>,
     /// Interest of a savings account that earns it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interest: Option<crate::savings::InterestOut>,
@@ -52,8 +54,24 @@ pub struct AccountIn {
     #[serde(default = "regular")]
     pub kind: String,
     pub target_amount: Option<f64>,
+    /// Absent keeps the date (a page that doesn't know dates); null removes it.
+    #[serde(default, deserialize_with = "present")]
+    pub target_date: Option<Option<NaiveDate>>,
     /// Interest settings of a savings account; `None` means it doesn't earn.
     pub interest: Option<crate::savings::AccountIn>,
+}
+
+/// A field that may be absent (outer `None`), null (`Some(None)`) or set.
+pub fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(d: D) -> Result<Option<Option<T>>, D::Error> {
+    Option::<T>::deserialize(d).map(Some)
+}
+
+/// The first day of the goal's month, kept only with a goal.
+fn goal_month(a: &AccountIn) -> Option<Option<String>> {
+    if !a.target_amount.is_some_and(|t| t > 0.0) {
+        return Some(None);
+    }
+    a.target_date.map(|d| d.and_then(|d| d.with_day(1)).map(|d| d.to_string()))
 }
 
 fn regular() -> String {
@@ -104,7 +122,7 @@ pub async fn list(db: &PgPool, budget: i64, today: Option<NaiveDate>) -> sqlx::R
                     WHERE t.account_id = a.id AND t.transaction_date <= $2
                       AND (a.initial_date IS NULL OR t.transaction_date >= a.initial_date)), 0),
                 (SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id),
-                a.kind, a.target_amount, a.interest_kind IS NOT NULL
+                a.kind, a.target_amount, a.interest_kind IS NOT NULL, a.target_date
          FROM accounts a LEFT JOIN users u ON u.id = a.owner_id
          WHERE a.budget_id = $1
          ORDER BY a.archived, a.position, a.id"
@@ -128,6 +146,7 @@ pub async fn list(db: &PgPool, budget: i64, today: Option<NaiveDate>) -> sqlx::R
             used: r.get(10),
             kind: r.get(11),
             target_amount: r.get(12),
+            target_date: r.get(14),
             interest: interest.get(&r.get::<i64, _>(0)).cloned(),
         })
         .collect())
@@ -192,12 +211,12 @@ pub async fn create(db: &PgPool, budget: i64, a: &AccountIn) -> sqlx::Result<Res
         return Ok(Err(Problem::Owner));
     }
     let id = sqlx::query_scalar(
-        "INSERT INTO accounts (budget_id, name, emoji, currency, owner_id, initial_amount, initial_date, kind, target_amount, position)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1))
+        "INSERT INTO accounts (budget_id, name, emoji, currency, owner_id, initial_amount, initial_date, kind, target_amount, position, target_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, (SELECT COALESCE(MAX(position), 0) + 1 FROM accounts WHERE budget_id = $1), $10)
          RETURNING id",
     )
     .bind(budget).bind(name).bind(emoji).bind(currency).bind(a.owner_id).bind(a.initial_amount).bind(a.initial_date.map(|d| d.to_string()))
-    .bind(&a.kind).bind(a.target_amount.filter(|t| *t > 0.0))
+    .bind(&a.kind).bind(a.target_amount.filter(|t| *t > 0.0)).bind(goal_month(a).flatten())
     .fetch_one(db)
     .await?;
     if let Some(i) = &a.interest {
@@ -230,11 +249,12 @@ pub async fn update(db: &PgPool, budget: i64, id: i64, a: &AccountIn) -> sqlx::R
     }
     sqlx::query(
         "UPDATE accounts SET name = $3, emoji = $4, currency = $5, owner_id = $6, initial_amount = $7, initial_date = $8, archived = $9,
-                kind = $10, target_amount = $11
+                kind = $10, target_amount = $11, target_date = CASE WHEN $12 THEN $13 ELSE target_date END
          WHERE id = $1 AND budget_id = $2",
     )
     .bind(id).bind(budget).bind(name).bind(emoji).bind(currency).bind(a.owner_id).bind(a.initial_amount)
     .bind(a.initial_date.map(|d| d.to_string())).bind(a.archived).bind(&a.kind).bind(a.target_amount.filter(|t| *t > 0.0))
+    .bind(goal_month(a).is_some()).bind(goal_month(a).flatten())
     .execute(db)
     .await?;
     let earning: bool = sqlx::query_scalar("SELECT interest_kind IS NOT NULL FROM accounts WHERE id = $1").bind(id).fetch_one(db).await?;

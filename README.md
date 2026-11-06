@@ -15,9 +15,12 @@ A self-hosted family budget. Install it with Docker, open it in a browser and ad
 
 - Expenses and income by category and subcategory, in several currencies. Any operation can be changed or deleted later, from its category, its account or a report.
 - Accounts: cards and cash, each in its own currency, shared or someone's own, with a starting balance. Transfers between accounts, also between currencies at that day's rate.
+- Monthly limits on expense categories: the home screen shows how much of each limit is spent, turning yellow near it and red past it, and the category shows what is left and how much a day until the month ends. Spending in other currencies counts at today's rate.
+- A forecast for the end of the month: the money now, plus the recurring operations still to come, minus the usual daily spending of the last 90 days (without big one-off expenses). A limit that this pace would pass is flagged early.
 - An amount field that adds things up: type `120+45` and `165` is saved.
 - Reports by day, week, month, year or any period.
-- Savings accounts with a goal, paid into and out of by transfers from any account.
+- Savings accounts with a goal, paid into and out of by transfers from any account. A goal can have a month to reach it by, and then shows how much to put aside each month.
+- Reports compare each category with the period before (the same days of it while a period is going on), and a search finds operations by note, category or amount (`1500`, `1000-2000`).
 - Interest: a flexible account paid monthly or a term deposit paid at maturity. Interest is counted daily and tax is withheld once at payout, as a bank does (in lira the stopaj rate is suggested by the term). A term deposit either renews or, at its end, goes back with its interest to the account you chose; then you can open a new term. Rate changes apply from their day.
 - Recurring operations and transfers (rent, subscriptions, salary, a monthly deposit): weekly, monthly or yearly, added on their day.
 - CSV export of everything (accounts, starting balances, operations, transfers, interest), and CSV import from that export, a bank, Excel, Firefly III, Actual Budget or ezBookkeeping: you pick the columns, missing categories are created, and importing the same file twice adds nothing.

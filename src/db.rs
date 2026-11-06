@@ -261,6 +261,8 @@ pub struct CategoryRow {
     pub color: String,
     pub kind: String,
     pub target_amount: Option<f64>,
+    pub limit_amount: Option<f64>,
+    pub limit_currency: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -274,6 +276,50 @@ pub struct CategoryOut {
     pub total: f64,
     pub totals_by_currency: Totals,
     pub target_amount: Option<f64>,
+    /// The monthly spending limit of an expense category, with its currency.
+    pub limit_amount: Option<f64>,
+    pub limit_currency: Option<String>,
+    /// The month's spending counted in the limit's currency (filled by `count_limits`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_spent: Option<f64>,
+    /// True when some spending had no rate to the limit's currency and is left out.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub limit_partial: bool,
+    /// The month's expected spending at its end, in the limit's currency (current month only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit_forecast: Option<f64>,
+}
+
+/// Fills `limit_spent` of the categories with a limit. `rate(from, to)` gives units of `to` for
+/// one `from`; spending in the limit's own currency needs none.
+pub fn count_limits(cats: &mut [CategoryOut], rate: impl Fn(&str, &str) -> Option<f64>) {
+    for c in cats.iter_mut() {
+        let (Some(_), Some(cur)) = (c.limit_amount, c.limit_currency.as_deref()) else { continue };
+        let mut spent = 0.0;
+        let mut partial = false;
+        for (from, v) in &c.totals_by_currency {
+            if v.abs() < 0.005 {
+                continue;
+            }
+            if from == cur {
+                spent += v;
+            } else if let Some(r) = rate(from, cur) {
+                spent += v * r;
+            } else {
+                partial = true;
+            }
+        }
+        c.limit_spent = Some((spent * 100.0).round() / 100.0);
+        c.limit_partial = partial;
+    }
+}
+
+/// Currencies other than the limit's that the limited categories spent in this month.
+pub fn limit_foreign(cats: &[CategoryOut]) -> bool {
+    cats.iter().any(|c| {
+        c.limit_amount.is_some()
+            && c.totals_by_currency.iter().any(|(k, v)| v.abs() >= 0.005 && Some(k.as_str()) != c.limit_currency.as_deref())
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -292,12 +338,14 @@ fn category_from_row(r: &PgRow) -> CategoryRow {
         color: r.get("color"),
         kind: r.get("type"),
         target_amount: r.get("target_amount"),
+        limit_amount: r.get("limit_amount"),
+        limit_currency: r.get("limit_currency"),
     }
 }
 
 /// Any category (root or subcategory) of the budget.
 pub async fn category_row(db: &PgPool, budget: i64, id: i64) -> sqlx::Result<Option<CategoryRow>> {
-    let row = sqlx::query("SELECT id, name, emoji, color, type, target_amount FROM categories WHERE id = $1 AND budget_id = $2")
+    let row = sqlx::query("SELECT id, name, emoji, color, type, target_amount, limit_amount, limit_currency FROM categories WHERE id = $1 AND budget_id = $2")
         .bind(id)
         .bind(budget)
         .fetch_optional(db)
@@ -306,7 +354,7 @@ pub async fn category_row(db: &PgPool, budget: i64, id: i64) -> sqlx::Result<Opt
 }
 
 pub async fn root_category_row(db: &PgPool, budget: i64, id: i64) -> sqlx::Result<Option<CategoryRow>> {
-    let row = sqlx::query("SELECT id, name, emoji, color, type, target_amount FROM categories WHERE id = $1 AND parent_id IS NULL AND budget_id = $2")
+    let row = sqlx::query("SELECT id, name, emoji, color, type, target_amount, limit_amount, limit_currency FROM categories WHERE id = $1 AND parent_id IS NULL AND budget_id = $2")
         .bind(id)
         .bind(budget)
         .fetch_optional(db)
@@ -315,7 +363,7 @@ pub async fn root_category_row(db: &PgPool, budget: i64, id: i64) -> sqlx::Resul
 }
 
 pub async fn root_categories(db: &PgPool, budget: i64) -> sqlx::Result<Vec<CategoryRow>> {
-    let rows = sqlx::query("SELECT id, name, emoji, color, type, target_amount FROM categories WHERE parent_id IS NULL AND budget_id = $1 ORDER BY type ASC, id ASC")
+    let rows = sqlx::query("SELECT id, name, emoji, color, type, target_amount, limit_amount, limit_currency FROM categories WHERE parent_id IS NULL AND budget_id = $1 ORDER BY type ASC, id ASC")
         .bind(budget)
         .fetch_all(db)
         .await?;
@@ -374,6 +422,11 @@ fn category_out(c: &CategoryRow, rows: &[(i64, Option<String>, f64)], zero_fill:
         total,
         totals_by_currency: totals,
         target_amount: c.target_amount,
+        limit_amount: c.limit_amount,
+        limit_currency: c.limit_currency.clone(),
+        limit_spent: None,
+        limit_partial: false,
+        limit_forecast: None,
     }
 }
 
@@ -605,17 +658,20 @@ pub struct SavingsSummary {
     pub progress_percent: f64,
     /// All savings accounts' money by currency, up to the end of the month on screen.
     pub saved_by_currency: Totals,
+    /// The month the goal is meant to be reached in, `YYYY-MM-01`.
+    pub target_date: Option<String>,
 }
 
 /// Savings up to `until` (exclusive, `YYYY-MM-DD`): the end of the month on screen. The goal
 /// counts savings in the main currency.
 pub async fn savings_summary(db: &PgPool, budget: i64, until: &str) -> sqlx::Result<Option<SavingsSummary>> {
     let by_currency = crate::accounts::savings_totals(db, budget, until).await?;
-    let settings: Option<(String, Option<f64>)> = sqlx::query_as("SELECT main_currency, savings_goal FROM budget_settings WHERE budget_id = $1")
-        .bind(budget)
-        .fetch_optional(db)
-        .await?;
-    let (currency, goal) = settings.unwrap_or_else(|| ("₺".into(), None));
+    let settings: Option<(String, Option<f64>, Option<String>)> =
+        sqlx::query_as("SELECT main_currency, savings_goal, savings_goal_date FROM budget_settings WHERE budget_id = $1")
+            .bind(budget)
+            .fetch_optional(db)
+            .await?;
+    let (currency, goal, target_date) = settings.unwrap_or_else(|| ("₺".into(), None, None));
     let saved = by_currency.get(&currency).copied().unwrap_or(0.0);
     let target = goal.unwrap_or(0.0);
     let progress = if target > 0.0 { ((saved / target * 100.0) * 10.0).round() / 10.0 } else { 0.0 };
@@ -626,6 +682,7 @@ pub async fn savings_summary(db: &PgPool, budget: i64, until: &str) -> sqlx::Res
         remaining_amount: (target - saved).max(0.0),
         progress_percent: progress.clamp(0.0, 100.0),
         saved_by_currency: by_currency,
+        target_date,
     }))
 }
 
@@ -691,13 +748,15 @@ pub struct Report {
     /// Expenses per day, only days that have any.
     pub days: Vec<ReportDay>,
     pub transactions: Vec<ReportTransaction>,
+    /// The period it is compared with, when asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compare: Option<Compare>,
 }
 
-/// Operations of a budget dated `from..=to`. The starting balance of savings is left out,
-/// as in the month summary: it is not money of the period.
-pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) -> sqlx::Result<Report> {
-    let end = (to + chrono::Days::new(1)).to_string();
-    let rows = sqlx::query(
+/// The operations a report lists, with their category; `$1` is the budget. Callers add
+/// their own conditions after it, starting with AND.
+macro_rules! REPORT_SELECT {
+    () => {
         "SELECT t.id, t.type, t.amount, t.currency, t.note, t.transaction_date,
                 r.id, r.name, r.emoji, r.color, CASE WHEN c.parent_id IS NULL THEN NULL ELSE c.name END,
                 COALESCE(u.first_name, u.username, u.telegram_id), t.source, t.pair_id,
@@ -706,11 +765,140 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
          JOIN categories c ON c.id = t.category_id
          JOIN categories r ON r.id = COALESCE(c.parent_id, c.id)
          LEFT JOIN users u ON u.id = t.user_id
-         WHERE c.budget_id = $1 AND t.transaction_date >= $2 AND t.transaction_date < $3
+         WHERE c.budget_id = $1
            AND NOT (t.type = 'savings' AND (COALESCE(t.note, '') LIKE 'Первоначальная сумма%' OR COALESCE(t.source, 'withdrawal') <> 'withdrawal'))
-           AND NOT (t.source = 'interest_fixed' AND t.amount = 0)
-         ORDER BY t.transaction_date DESC, t.created_at DESC, t.id DESC",
+           AND NOT (t.source = 'interest_fixed' AND t.amount = 0)"
+    };
+}
+
+fn report_transaction(r: &PgRow) -> ReportTransaction {
+    ReportTransaction {
+        id: r.get(0),
+        category_id: r.get(6),
+        kind: r.get(1),
+        amount: r.get(2),
+        currency: r.get(3),
+        note: r.get(4),
+        transaction_date: r.get(5),
+        category_name: r.get(7),
+        category_emoji: r.get(8),
+        subcategory_name: r.get(10),
+        actor_name: r.get(11),
+        source: r.get(12),
+        pair_id: r.get(13),
+        rate: r.get(14),
+        rate_to: r.get(15),
+        rate_day: r.get(16),
+        account_id: r.get(17),
+    }
+}
+
+/// What a search asks for: words in the note or category, or an amount or a range of them.
+#[derive(Debug, PartialEq)]
+pub enum Search {
+    Text(String),
+    Amount(f64, f64),
+}
+
+/// "такси" is text; "1500", "1 500,50" and "1000-2000" are amounts (a range in either order).
+pub fn parse_search(q: &str) -> Option<Search> {
+    let q = q.trim();
+    if q.is_empty() {
+        return None;
+    }
+    let num = |s: &str| -> Option<f64> {
+        let s: String = s.chars().filter(|c| !c.is_whitespace() && *c != '\u{a0}' && *c != '\u{202f}').collect();
+        if s.is_empty() || !s.chars().all(|c| c.is_ascii_digit() || c == ',' || c == '.') {
+            return None;
+        }
+        s.replace(',', ".").parse::<f64>().ok().filter(|v| v.is_finite())
+    };
+    if let Some(v) = num(q) {
+        return Some(Search::Amount(v, v));
+    }
+    if let Some((a, b)) = q.split_once(['-', '–', '—']).and_then(|(a, b)| Some((num(a)?, num(b)?))) {
+        return Some(Search::Amount(a.min(b), a.max(b)));
+    }
+    Some(Search::Text(q.chars().take(100).collect()))
+}
+
+/// Operations matching a search, newest first, at most `limit`; `period` narrows it to dates
+/// `from..=to`.
+pub async fn search(db: &PgPool, budget: i64, what: &Search, period: Option<(NaiveDate, NaiveDate)>, limit: i64) -> sqlx::Result<Vec<ReportTransaction>> {
+    let (from, end) = match period {
+        Some((f, t)) => (f.to_string(), (t + chrono::Days::new(1)).to_string()),
+        None => ("0000-01-01".to_string(), "9999-12-31".to_string()),
+    };
+    let rows = match what {
+        Search::Text(text) => {
+            let like = format!("%{}%", text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            sqlx::query(concat!(
+                REPORT_SELECT!(),
+                " AND t.transaction_date >= $2 AND t.transaction_date < $3
+                  AND (t.note ILIKE $4 OR r.name ILIKE $4 OR (c.parent_id IS NOT NULL AND c.name ILIKE $4))
+                 ORDER BY t.transaction_date DESC, t.created_at DESC, t.id DESC LIMIT $5"
+            ))
+            .bind(budget).bind(&from).bind(&end).bind(like).bind(limit)
+            .fetch_all(db)
+            .await?
+        }
+        Search::Amount(lo, hi) => {
+            sqlx::query(concat!(
+                REPORT_SELECT!(),
+                " AND t.transaction_date >= $2 AND t.transaction_date < $3
+                  AND t.amount >= $4 - 0.005 AND t.amount <= $5 + 0.005
+                 ORDER BY t.transaction_date DESC, t.created_at DESC, t.id DESC LIMIT $6"
+            ))
+            .bind(budget).bind(&from).bind(&end).bind(lo).bind(hi).bind(limit)
+            .fetch_all(db)
+            .await?
+        }
+    };
+    Ok(rows.iter().map(report_transaction).collect())
+}
+
+/// Expenses and income of a period to compare a report with: totals and expenses by category.
+#[derive(Debug, Serialize)]
+pub struct Compare {
+    pub from: String,
+    pub to: String,
+    pub expense: Totals,
+    pub income: Totals,
+    pub categories: BTreeMap<i64, Totals>,
+}
+
+pub async fn compare(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) -> sqlx::Result<Compare> {
+    let end = (to + chrono::Days::new(1)).to_string();
+    let rows: Vec<(String, i64, String, f64)> = sqlx::query_as(
+        "SELECT t.type, COALESCE(c.parent_id, c.id), t.currency, SUM(t.amount)
+         FROM transactions t JOIN categories c ON c.id = t.category_id
+         WHERE c.budget_id = $1 AND t.type IN ('expense', 'income') AND t.transaction_date >= $2 AND t.transaction_date < $3
+         GROUP BY 1, 2, 3",
     )
+    .bind(budget).bind(from.to_string()).bind(&end)
+    .fetch_all(db)
+    .await?;
+    let mut out = Compare { from: from.to_string(), to: to.to_string(), expense: Totals::new(), income: Totals::new(), categories: BTreeMap::new() };
+    for (kind, root, cur, v) in rows {
+        if kind == "income" {
+            *out.income.entry(cur).or_default() += v;
+        } else {
+            *out.categories.entry(root).or_default().entry(cur.clone()).or_default() += v;
+            *out.expense.entry(cur).or_default() += v;
+        }
+    }
+    Ok(out)
+}
+
+/// Operations of a budget dated `from..=to`. The starting balance of savings is left out,
+/// as in the month summary: it is not money of the period.
+pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) -> sqlx::Result<Report> {
+    let end = (to + chrono::Days::new(1)).to_string();
+    let rows = sqlx::query(concat!(
+        REPORT_SELECT!(),
+        " AND t.transaction_date >= $2 AND t.transaction_date < $3
+         ORDER BY t.transaction_date DESC, t.created_at DESC, t.id DESC"
+    ))
     .bind(budget).bind(from.to_string()).bind(&end)
     .fetch_all(db)
     .await?;
@@ -724,29 +912,12 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
         categories: Vec::new(),
         days: Vec::new(),
         transactions: Vec::with_capacity(rows.len()),
+        compare: None,
     };
     let mut categories: BTreeMap<i64, ReportCategory> = BTreeMap::new();
     let mut days: BTreeMap<String, Totals> = BTreeMap::new();
     for r in &rows {
-        let t = ReportTransaction {
-            id: r.get(0),
-            category_id: r.get(6),
-            kind: r.get(1),
-            amount: r.get(2),
-            currency: r.get(3),
-            note: r.get(4),
-            transaction_date: r.get(5),
-            category_name: r.get(7),
-            category_emoji: r.get(8),
-            subcategory_name: r.get(10),
-            actor_name: r.get(11),
-            source: r.get(12),
-            pair_id: r.get(13),
-            rate: r.get(14),
-            rate_to: r.get(15),
-            rate_day: r.get(16),
-            account_id: r.get(17),
-        };
+        let t = report_transaction(r);
         let totals = match t.kind.as_str() {
             "income" => &mut report.income,
             "savings" => &mut report.savings,
@@ -779,6 +950,45 @@ pub async fn report(db: &PgPool, budget: i64, from: NaiveDate, to: NaiveDate) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cat(limit: Option<(f64, &str)>, totals: &[(&str, f64)]) -> CategoryOut {
+        CategoryOut {
+            id: 1, name: "x".into(), emoji: "x".into(), color: "x".into(), kind: "expense".into(), total: 0.0,
+            totals_by_currency: totals.iter().map(|(k, v)| (k.to_string(), *v)).collect(), target_amount: None,
+            limit_amount: limit.map(|l| l.0), limit_currency: limit.map(|l| l.1.to_string()), limit_spent: None, limit_partial: false, limit_forecast: None,
+        }
+    }
+
+    #[test]
+    fn a_search_is_words_or_amounts() {
+        assert_eq!(parse_search("  "), None);
+        assert_eq!(parse_search("Такси"), Some(Search::Text("Такси".into())));
+        assert_eq!(parse_search("1500"), Some(Search::Amount(1500.0, 1500.0)));
+        assert_eq!(parse_search("1 500,50"), Some(Search::Amount(1500.5, 1500.5)));
+        assert_eq!(parse_search("2000-1000"), Some(Search::Amount(1000.0, 2000.0)));
+        assert_eq!(parse_search("10 – 20"), Some(Search::Amount(10.0, 20.0)));
+        assert_eq!(parse_search("A-1"), Some(Search::Text("A-1".into())));
+    }
+
+    #[test]
+    fn spending_is_counted_in_the_limits_currency() {
+        let rate = |from: &str, to: &str| match (from, to) {
+            ("$", "₽") => Some(90.0),
+            _ => None,
+        };
+        let mut cats = vec![
+            cat(Some((10000.0, "₽")), &[("₽", 4000.0), ("$", 10.0), ("€", 0.0)]),
+            cat(Some((50.0, "$")), &[("₽", 900.0), ("$", 5.0)]),
+            cat(None, &[("$", 5.0)]),
+        ];
+        assert!(limit_foreign(&cats));
+        count_limits(&mut cats, rate);
+        assert_eq!((cats[0].limit_spent, cats[0].limit_partial), (Some(4900.0), false));
+        // No rate from ₽ to $: only the dollars are counted, and that is said.
+        assert_eq!((cats[1].limit_spent, cats[1].limit_partial), (Some(5.0), true));
+        assert_eq!(cats[2].limit_spent, None);
+        assert!(!limit_foreign(&[cat(Some((1.0, "$")), &[("$", 3.0), ("₽", 0.0)])]));
+    }
 
     #[test]
     fn a_budget_is_in_the_language_it_was_made_in() {

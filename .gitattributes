@@ -1,0 +1,3 @@
+# Translations and vendored libraries are not counted in GitHub's language bar.
+app/static/v2/js/locales/** linguist-detectable=false
+app/static/v2/vendor/** linguist-vendored

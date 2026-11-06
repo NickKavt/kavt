@@ -48,6 +48,22 @@ function moves(sum, cur) {
   ].filter(Boolean);
 }
 
+/** "By the month's end ≈ 142 000 ₽"; a tap shows what it is made of. Current month only. */
+function ForecastLine({ forecast, currency }) {
+  const l = forecast?.by_currency?.[currency];
+  if (!l) return null;
+  const usual = Math.round(l.per_day * forecast.days_left);
+  return html`<details class="forecast">
+    <summary><span>${t("forecast.end")}</span><b class=${l.end < 0 ? "negative" : ""}>≈ ${money(Math.round(l.end), currency)}</b></summary>
+    <div class="forecast-rows">
+      <span>${t("forecast.now")}</span><span>${money(l.now, currency)}</span>
+      ${Math.abs(l.scheduled) >= 0.005 && html`<span>${t("forecast.scheduled")}</span><span>${signedMoney(l.scheduled, currency)}</span>`}
+      ${usual > 0 && html`<span>${t("forecast.usual", { sum: money(Math.round(l.per_day), currency) })}</span><span>${signedMoney(-usual, currency)}</span>`}
+    </div>
+    ${forecast.short_history && html`<div class="muted small">${t("forecast.short")}</div>`}
+  </details>`;
+}
+
 /** One column per currency with money this month; with several, a tap picks the one the list below shows. */
 function Summary({ home, currencies, currency, onPick, parts, spent }) {
   const sum = home.month_summary || {};
@@ -71,6 +87,7 @@ function Summary({ home, currencies, currency, onPick, parts, spent }) {
         </button>`;
       })}
     </div>
+    <${ForecastLine} forecast=${home.forecast} currency=${currency} />
     ${spent > 0 && html`<${ShareBar} parts=${parts} total=${spent} />`}
     <${RatesLine} base=${currency} />
   </div>`;
@@ -78,19 +95,43 @@ function Summary({ home, currencies, currency, onPick, parts, spent }) {
 
 const open = c => navigate({ name: "category", id: c.id });
 
+/** How a category stands against its monthly limit, or null without one. */
+export function limitState(c) {
+  if (!(c.limit_amount > 0) || !c.limit_currency) return null;
+  // Whole units: spending in other currencies is converted, and kopecks of it mean nothing.
+  const spent = Math.round(c.limit_spent || 0), limit = c.limit_amount, cur = c.limit_currency;
+  const ratio = spent / limit;
+  // Spending at this pace goes past the limit by the month's end.
+  const expected = c.limit_forecast > limit ? Math.round(c.limit_forecast) : null;
+  const level = ratio > 1 ? "over" : ratio >= 0.8 || expected ? "warn" : "ok";
+  return { spent, limit, cur, ratio, left: limit - spent, level, expected, partial: !!c.limit_partial };
+}
+
+/** "12 400 из 15 000 ₽" with a bar that turns yellow near the limit and red past it. */
+function LimitLine({ c, l }) {
+  return html`<span class="cat-line">
+    <span class="cat-bar"><span class=${"limit-" + l.level} style=${`width:${Math.max(Math.min(l.ratio, 1) * 100, l.spent > 0 ? 1.5 : 0)}%;${l.level === "ok" ? `background:${c.color}` : ""}`}></span></span>
+    <span class=${"cat-pct limit-text-" + l.level}>${l.level === "over"
+      ? t("limit.over", { sum: money(-l.left, l.cur) })
+      : t("limit.of", { spent: money(l.spent, l.cur), limit: money(l.limit, l.cur) })}</span>
+  </span>`;
+}
+
 /** An expense category: its share of the month's spending in the chosen currency. */
 function ExpenseRow({ c, currency, spent }) {
+  const l = limitState(c);
   const value = c.totals_by_currency?.[currency] || 0;
   const others = usedCurrencies(c.totals_by_currency).filter(cur => cur !== currency);
   const pct = spent > 0 ? (value / spent) * 100 : 0;
-  return html`<button type="button" class=${"cat-row" + (value > 0 || others.length ? "" : " idle")} onClick=${() => open(c)}>
+  return html`<button type="button" class=${"cat-row" + (value > 0 || others.length || l ? "" : " idle")} onClick=${() => open(c)}>
     <span class="cat-emoji">${c.emoji}</span>
     <span class="cat-main">
       <span class="cat-line">
         <span class="cat-name">${c.name}</span>
         <span class="cat-value">${money(value, currency)}</span>
       </span>
-      ${value > 0 && html`<span class="cat-line">
+      ${l && html`<${LimitLine} c=${c} l=${l} />`}
+      ${!l && value > 0 && html`<span class="cat-line">
         <span class="cat-bar"><span style=${`width:${Math.max(pct, 1.5)}%;background:${c.color}`}></span></span>
         <span class="cat-pct">${pct < 1 ? "<1" : Math.round(pct)}%</span>
       </span>`}

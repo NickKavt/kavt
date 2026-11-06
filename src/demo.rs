@@ -304,12 +304,22 @@ async fn fill(state: &AppState, budget: i64, lang: &'static str) -> ApiResult<()
     crate::import::import_rows(&state.db, budget, budget, &rows(s, start, today, &mut dice), false).await?;
 
     let money = |dollars: f64| (dollars * s.scale / s.step).round() * s.step;
-    crate::rates::save_goal(&state.db, budget, Some(money(5000.0))).await?;
-    sqlx::query("UPDATE accounts SET target_amount = $3, emoji = '🏖️' WHERE budget_id = $1 AND name = $2")
-        .bind(budget).bind(s.trip).bind(money(3000.0))
+    crate::rates::save_goal(&state.db, budget, Some(money(5000.0)), None).await?;
+    // The trip is saved for by a month eight months from now.
+    let trip_month = (today.with_day(1).unwrap_or(today) + chrono::Months::new(8)).to_string();
+    sqlx::query("UPDATE accounts SET target_amount = $3, target_date = $4, emoji = '🏖️' WHERE budget_id = $1 AND name = $2")
+        .bind(budget).bind(s.trip).bind(money(3000.0)).bind(trip_month)
         .execute(&state.db)
         .await?;
     sqlx::query("UPDATE accounts SET emoji = '💵' WHERE budget_id = $1 AND name = $2").bind(budget).bind(s.cash).execute(&state.db).await?;
+    // Monthly limits: groceries usually fit, fun usually goes over, so both looks show.
+    let n = names_of(s);
+    for (name, dollars) in [(n.groceries, 700.0), (n.fun, 200.0), (n.other, 90.0)] {
+        sqlx::query("UPDATE categories SET limit_amount = $3, limit_currency = $4 WHERE budget_id = $1 AND name = $2 AND parent_id IS NULL AND type = 'expense'")
+            .bind(budget).bind(name).bind(money(dollars)).bind(s.main)
+            .execute(&state.db)
+            .await?;
+    }
     let card: i64 = sqlx::query_scalar("SELECT id FROM accounts WHERE budget_id = $1 AND name = $2")
         .bind(budget).bind(s.card)
         .fetch_one(&state.db)
@@ -327,6 +337,7 @@ async fn fill(state: &AppState, budget: i64, lang: &'static str) -> ApiResult<()
         archived: false,
         kind: "savings".into(),
         target_amount: None,
+        target_date: None,
         interest: Some(savings::AccountIn {
             kind: savings::Kind::Term,
             rate: s.deposit_rate.0,
