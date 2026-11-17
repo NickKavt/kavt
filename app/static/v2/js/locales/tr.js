@@ -38,6 +38,8 @@ export default {
   "form.date": "Tarih",
   "form.today": "Bugün",
   "form.noSubcategory": "Alt kategori yok",
+  "form.category": "Kategori",
+  "form.subcategory": "Alt kategori",
   "form.addExpense": "Gider ekle",
   "form.addIncome": "Gelir ekle",
   "form.enterAmount": "Sıfırdan büyük bir tutar girin",
@@ -325,7 +327,6 @@ export default {
 
   "manage.data": "Veriler",
   "form.repeat": "Tekrar",
-  "form.noRepeat": "Tekrarlama",
   "every.week": "her hafta",
   "every.month": "her ay",
   "every.year": "her yıl",

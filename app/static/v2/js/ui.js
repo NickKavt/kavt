@@ -1,8 +1,8 @@
 // Small building blocks shared by the screens.
 
 import { html, useEffect, useRef, useState } from "../vendor/preact-htm.js";
-import { t } from "./i18n.js";
-import { money, ymd, today, myCurrencies, allCurrencies, currencyName, currencySymbol, codeOf } from "./format.js";
+import { t, locale } from "./i18n.js";
+import { money, ymd, parseYmd, today, myCurrencies, allCurrencies, currencyName, currencySymbol, codeOf } from "./format.js";
 import { evalAmount, isExpression } from "./calc.js";
 import { state, closeSheet } from "./store.js";
 import { haptic } from "./tg.js";
@@ -113,6 +113,17 @@ export function DateField({ value, onChange }) {
   </label>`;
 }
 
+/** A date in words ("17 ноября") inside a pair; the native date picker sits on top, invisible. */
+export function DateCell({ value, onChange }) {
+  const d = parseYmd(value);
+  const words = d.toLocaleDateString(locale(), { day: "numeric", month: "long", ...(d.getFullYear() !== today().getFullYear() && { year: "numeric" }) });
+  return html`<label class="pair-cell pair-btn date-cell">
+    <span class="pair-text">📅 ${words}</span><span class="pair-arrow">▾</span>
+    <input type="date" value=${value} aria-label=${t("form.date")} onChange=${e => e.currentTarget.value && onChange(e.currentTarget.value)}
+      onClick=${e => { try { e.currentTarget.showPicker(); } catch {} }} />
+  </label>`;
+}
+
 /** Row of a grouped list, like in phone settings. */
 export function Row({ icon, title, subtitle, right, onClick, tone, chevron = true }) {
   return html`<button type="button" class=${"row" + (tone ? " row-" + tone : "")} onClick=${onClick}>
@@ -187,15 +198,20 @@ export function CurrencySelect({ value, onChange, title }) {
  * A field showing the chosen item; tapping it opens the list of items over the sheet.
  * `items`: [{ value, label, hint? }].
  */
-export function ListSelect({ items, value, onChange, label, title }) {
+export function ListSelect({ items, value, onChange, label, title, inline }) {
   const [open, setOpen] = useState(false);
   const cur = items.find(i => i.value === value);
-  return html`<div class="account-select">
-    <button type="button" class="field account-field af-inside" onClick=${() => { haptic(); setOpen(true); }}>
-      ${label && html`<span class="af-caption">${label}</span>`}
-      <span class="af-main">${cur ? cur.label : "—"}</span>
-      <span class="af-arrow">›</span>
-    </button>
+  const show = () => { haptic(); setOpen(true); };
+  return html`<div class=${inline ? "pair-cell" : "account-select"}>
+    ${inline
+      ? html`<button type="button" class="pair-btn" onClick=${show} aria-label=${title}>
+          <span class="pair-text">${cur ? cur.label : "—"}</span><span class="pair-arrow">▾</span>
+        </button>`
+      : html`<button type="button" class="field account-field af-inside" onClick=${show}>
+          ${label && html`<span class="af-caption">${label}</span>`}
+          <span class="af-main">${cur ? cur.label : "—"}</span>
+          <span class="af-arrow">›</span>
+        </button>`}
     ${open && html`<div class="picker-backdrop" onClick=${() => setOpen(false)}>
       <div class="picker" onClick=${e => e.stopPropagation()}>
         <div class="picker-title">${title || label}</div>

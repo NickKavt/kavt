@@ -2,19 +2,18 @@
 
 import { html, useEffect, useState } from "../../vendor/preact-htm.js";
 import { t, errorText, locale } from "../i18n.js";
-import { money, usedCurrencies, ymd, parseYmd, today, sameMonth, dayTitle, weekday, monthStart, addMonths } from "../format.js";
+import { money, usedCurrencies, ymd, parseYmd, today, sameMonth, dayTitle, weekday, monthStart } from "../format.js";
 import { useStore, openSheet, toast, state } from "../store.js";
-import { loadDetails, addOperation, refresh, setMonth, createRecurring } from "../data.js";
+import { loadDetails, addOperation, refresh, createRecurring } from "../data.js";
 import { evalAmount } from "../calc.js";
 import { haptic, tell, tg } from "../tg.js";
 import { back } from "../router.js";
-import { MoneyField, DateField, Chips, Seg, Empty, lastCurrency, rememberCurrency } from "../ui.js";
+import { MoneyField, DateCell, Seg, Empty, ListSelect, lastCurrency, rememberCurrency } from "../ui.js";
 import { MonthBar, limitState } from "./home.js";
 import { AccountPicker, everydayAccounts, defaultAccount, rememberAccount, accountLabel, BeforeStart } from "./accounts.js";
 
 /** Marks the savings starting balance; the server leaves it out of month balances. */
 export const INITIAL_NOTE = "Первоначальная сумма";
-import { useSwipe } from "./swipe.js";
 import { EVERY } from "./tools.js";
 
 /** Date a new operation gets: today in the current month, else the month's first day. */
@@ -33,7 +32,9 @@ function lastSub(id) {
 }
 
 /** Form for a new operation; also used by the quick-add sheet on the home screen. */
-export function AddForm({ category, details, onSaved, autofocus }) {
+const capital = s => s.charAt(0).toUpperCase() + s.slice(1);
+
+export function AddForm({ category, details, onSaved, autofocus, catSelect }) {
   const s = useStore();
   const [amount, setAmount] = useState("");
   const accounts = everydayAccounts(s);
@@ -103,21 +104,27 @@ export function AddForm({ category, details, onSaved, autofocus }) {
 
   const label = category.type === "income" ? t("form.addIncome") : t("form.addExpense");
   return html`<div class="card form">
-    ${subs.length > 0 && html`<${Chips}
-      items=${[[null, t("form.noSubcategory")], ...subs.map(x => [x.id, x.name])]} value=${sub} onChange=${setSub} />`}
+    ${(catSelect || subs.length > 0) && html`<div class="pair">
+      ${catSelect}
+      ${subs.length > 0 && html`<${ListSelect} inline title=${t("form.subcategory")} value=${sub} onChange=${setSub}
+        items=${[{ value: null, label: t("form.noSubcategory") }, ...subs.map(x => ({ value: x.id, label: x.name }))]} />`}
+    </div>`}
     <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${pickCurrency} autofocus=${autofocus} onEnter=${save} />
     <${AccountPicker} accounts=${accounts} value=${account} onChange=${pickAccount}
       label=${category.type === "income" ? t("accounts.toAccount") : ""} />
     <input class="field" placeholder=${t("form.note")} value=${note} onInput=${e => setNote(e.currentTarget.value)} maxlength="200" />
-    <${DateField} value=${date} onChange=${setDate} />
+    <div class="pair">
+      <${DateCell} value=${date} onChange=${setDate} />
+      <div class="pair-cell repeat-cell">
+        ${repeat
+          ? html`<${ListSelect} inline title=${t("form.repeat")} value=${repeat} onChange=${setRepeat}
+              items=${EVERY.map(x => ({ value: x, label: "🔁 " + capital(t("every." + x)) }))} />`
+          : html`<button type="button" class="pair-btn" onClick=${() => { haptic(); setRepeat("month"); }}><span class="pair-text">🔁 ${t("form.repeat")}</span></button>`}
+        <button type="button" class=${"switch" + (repeat ? " on" : "")} role="switch" aria-checked=${repeat ? "true" : "false"} aria-label=${t("form.repeat")}
+          onClick=${() => { haptic(); setRepeat(repeat ? "" : "month"); }}></button>
+      </div>
+    </div>
     <${BeforeStart} accounts=${[accounts.find(a => a.id === account)]} date=${date} />
-    ${html`<label class="date-row repeat-row">
-      <span class="date-label">🔁 ${t("form.repeat")}</span>
-      <select class="field" value=${repeat} onChange=${e => setRepeat(e.currentTarget.value)}>
-        <option value="">${t("form.noRepeat")}</option>
-        ${EVERY.map(x => html`<option value=${x}>${t("every." + x)}</option>`)}
-      </select>
-    </label>`}
     <button type="button" class="btn btn-primary" disabled=${busy} onClick=${save}>${label}</button>
   </div>`;
 }
@@ -226,27 +233,26 @@ export function Category({ id }) {
   const s = useStore();
   const details = s.details[id];
   const category = s.home?.categories.find(c => c.id === id) || details;
-  const swipe = useSwipe(n => setMonth(addMonths(s.month, n)));
   const [error, setError] = useState(null);
   useEffect(() => {
     if (!details) loadDetails(id).catch(e => setError(errorText(e)));
   }, [id, ymd(s.month)]);
-  if (error && !details) return html`<${Empty}>${error}<//>`;
-  if (!details || !category) return html`<${Empty}>${t("common.loading")}<//>`;
+  if (error && !details) return html`<${MonthBar} /><${Empty}>${error}<//>`;
+  if (!details || !category) return html`<${MonthBar} /><${Empty}>${t("common.loading")}<//>`;
 
   const totals = category.type === "income" ? s.home?.month_summary?.income : details.totals_by_currency;
   const used = usedCurrencies(totals);
   const opsCurrencies = usedCurrencies(details.transactions.reduce((m, o) => ((m[o.currency] = (m[o.currency] || 0) + signed(o)), m), {}));
   const ops = details.transactions.map(o => ({ ...o, subcategory_name: o.subcategory_name === details.name ? null : o.subcategory_name }));
 
-  return html`<div ...${swipe}>
+  return html`<div>
+    <${MonthBar} />
     <div class="cat-head" style=${`--cat:${details.color}`}>
       ${!tg?.initData && html`<button type="button" class="icon-btn cat-back" onClick=${back} aria-label=${t("nav.back")}>‹</button>`}
       <span class="cat-emoji">${details.emoji}</span>
       <span class="cat-head-name">${details.name}</span>
       ${category.type !== "savings" && html`<span class="cat-amounts">${(used.length ? used : [lastCurrency()]).map(c => html`<span>${money(totals?.[c] || 0, c)}</span>`)}</span>`}
     </div>
-    <${MonthBar} />
     ${category.type === "expense" && html`<${LimitCard} category=${category} month=${s.month} />`}
     <${AddForm} category=${category} details=${details} />
     ${opsCurrencies.map(c => html`<${Breakdown} details=${details} currency=${c} />`)}

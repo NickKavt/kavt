@@ -53,9 +53,10 @@ function QuickAdd() {
   const pickKind = k => (k === "savings" ? openSheet("moneyTransfer", { toSavings: true }) : setKind(k));
   return html`<${Sheet} title=${t("quick.title")}>
     <${Seg} options=${[["expense", t("kind.expense")], ["income", t("quick.income")], ["savings", t("kind.savings")]]} value=${kind} onChange=${pickKind} />
-    ${kind === "expense" && html`<${Chips} items=${expenses.map(c => [c.id, `${c.emoji} ${c.name}`])} value=${catId} onChange=${pick} />`}
     ${category
-      ? html`<${AddForm} key=${kind} category=${category} details=${s.details[category.id]} autofocus onSaved=${closeSheet} />`
+      ? html`<${AddForm} key=${kind} category=${category} details=${s.details[category.id]} autofocus onSaved=${closeSheet}
+          catSelect=${kind === "expense" && html`<${ListSelect} inline title=${t("form.category")} value=${catId} onChange=${pick}
+            items=${expenses.map(c => ({ value: c.id, label: `${c.emoji} ${c.name}` }))} />`} />`
       : html`<${Empty}>${t("quick.noCategory")}<//>`}
   <//>`;
 }

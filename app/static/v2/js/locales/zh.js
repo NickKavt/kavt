@@ -38,6 +38,8 @@ export default {
   "form.date": "日期",
   "form.today": "今天",
   "form.noSubcategory": "无子类别",
+  "form.category": "类别",
+  "form.subcategory": "子类别",
   "form.addExpense": "添加支出",
   "form.addIncome": "添加收入",
   "form.enterAmount": "请输入大于零的金额",
@@ -325,7 +327,6 @@ export default {
 
   "manage.data": "数据",
   "form.repeat": "重复",
-  "form.noRepeat": "不重复",
   "every.week": "每周",
   "every.month": "每月",
   "every.year": "每年",

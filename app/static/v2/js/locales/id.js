@@ -38,6 +38,8 @@ export default {
   "form.date": "Tanggal",
   "form.today": "Hari ini",
   "form.noSubcategory": "Tanpa subkategori",
+  "form.category": "Kategori",
+  "form.subcategory": "Subkategori",
   "form.addExpense": "Tambah pengeluaran",
   "form.addIncome": "Tambah pemasukan",
   "form.enterAmount": "Masukkan jumlah lebih dari nol",
@@ -325,7 +327,6 @@ export default {
 
   "manage.data": "Data",
   "form.repeat": "Ulangi",
-  "form.noRepeat": "Jangan ulangi",
   "every.week": "tiap minggu",
   "every.month": "tiap bulan",
   "every.year": "tiap tahun",

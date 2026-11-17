@@ -8,24 +8,16 @@ import { navigate } from "../router.js";
 import { setMonth } from "../data.js";
 import { haptic } from "../tg.js";
 import { Empty, lastCurrency } from "../ui.js";
-import { useSwipe } from "./swipe.js";
+import { PeriodBar } from "./swipe.js";
 import { AccountsCard, SavingsCard } from "./accounts.js";
 import { RatesLine, Converted } from "./rates-ui.js";
 
 export function MonthBar() {
   const s = useStore();
-  const shift = n => {
-    haptic();
-    setMonth(addMonths(s.month, n));
-  };
   const isCurrent = sameMonth(s.month, today());
-  return html`<div class="monthbar">
-    <button type="button" class="icon-btn" onClick=${() => shift(-1)} aria-label=${t("nav.prev")}>‹</button>
-    <button type="button" class="monthbar-title" onClick=${() => !isCurrent && setMonth(new Date(today().getFullYear(), today().getMonth(), 1))}>
-      ${monthTitle(s.month)}${!isCurrent && html`<span class="monthbar-hint">${t("home.backToNow")}</span>`}
-    </button>
-    <button type="button" class="icon-btn" onClick=${() => shift(1)} aria-label=${t("nav.next")}>›</button>
-  </div>`;
+  return html`<${PeriodBar} title=${monthTitle(s.month)} hint=${!isCurrent && t("home.backToNow")}
+    onTitle=${() => !isCurrent && setMonth(new Date(today().getFullYear(), today().getMonth(), 1))}
+    onShift=${n => setMonth(addMonths(s.month, n))} />`;
 }
 
 /** One thin bar split by category: where the month's money went. */
@@ -167,7 +159,6 @@ function FundRow({ c, savings, income }) {
 export function Home() {
   const s = useStore();
   const home = s.home;
-  const swipe = useSwipe(n => setMonth(addMonths(s.month, n)));
   const [picked, setPicked] = useState(null);
   if (!home) return html`<${MonthBar} /><${Empty}>${t("common.loading")}<//>`;
 
@@ -189,7 +180,7 @@ export function Home() {
   const parts = sorted.filter(c => value(c) > 0).map(c => ({ value: value(c), color: c.color }));
   const funds = ["income"].map(k => home.categories.find(c => c.type === k)).filter(Boolean);
 
-  return html`<div ...${swipe}>
+  return html`<div>
     <${MonthBar} />
     <div class="home-grid">
       <div class="home-main">

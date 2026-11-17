@@ -7,7 +7,7 @@ import { loadReport, search } from "../data.js";
 import { state, update, openSheet, useStore } from "../store.js";
 import { Seg, Chips, Empty } from "../ui.js";
 import { OperationList } from "./category.js";
-import { useSwipe } from "./swipe.js";
+import { PeriodBar } from "./swipe.js";
 
 // The period on screen survives leaving the tab.
 function period() {
@@ -252,7 +252,6 @@ export function Reports() {
       .finally(() => live && setLoading(false));
     return () => (live = false);
   }, [ymd(from), ymd(to), home]);
-  const swipe = useSwipe(n => p.mode !== "custom" && set(shift(p, n)));
 
   const currencies = report ? usedCurrencies(report.expense) : [];
   const currency = currencies.includes(p.currency) ? p.currency : currencies[0];
@@ -261,22 +260,18 @@ export function Reports() {
     else set({ ...p, mode, anchor: p.mode === "custom" ? parseYmd(p.to) : p.anchor });
   };
 
-  return html`<div ...${swipe}>
-    <div class="title-row">
-      <h1 class="screen-title">${t("reports.title")}</h1>
-      <button type="button" class=${"icon-btn" + (searching ? " active" : "")} onClick=${toggleSearch} aria-label=${t("reports.search")}>${searching ? "✕" : "🔍"}</button>
-    </div>
+  return html`<div>
     ${p.mode === "custom"
       ? html`<div class="inline-form">
           <input type="date" class="field" value=${p.from} onChange=${e => e.currentTarget.value && set({ ...p, from: e.currentTarget.value })} aria-label=${t("reports.from")} />
           <span class="muted">—</span>
           <input type="date" class="field" value=${p.to} onChange=${e => e.currentTarget.value && set({ ...p, to: e.currentTarget.value })} aria-label=${t("reports.to")} />
         </div>`
-      : html`<div class="monthbar">
-          <button type="button" class="icon-btn" onClick=${() => set(shift(p, -1))} aria-label=${t("nav.prev")}>‹</button>
-          <span class="monthbar-title">${label(p)}</span>
-          <button type="button" class="icon-btn" onClick=${() => set(shift(p, 1))} aria-label=${t("nav.next")}>›</button>
-        </div>`}
+      : html`<${PeriodBar} title=${label(p)} hint=${false} onShift=${n => set(shift(p, n))} />`}
+    <div class="title-row">
+      <h1 class="screen-title">${t("reports.title")}</h1>
+      <button type="button" class=${"icon-btn" + (searching ? " active" : "")} onClick=${toggleSearch} aria-label=${t("reports.search")}>${searching ? "✕" : "🔍"}</button>
+    </div>
     <${Seg} options=${[["day", t("reports.day")], ["week", t("reports.week")], ["month", t("reports.month")], ["year", t("reports.year")], ["custom", t("reports.custom")]]} value=${p.mode} onChange=${setMode} />
     ${searching && html`<${Search} period=${[from, to]} onOpen=${openOp} />`}
     <div class=${(loading && report ? "dim" : "") + (searching ? " hidden" : "")}>

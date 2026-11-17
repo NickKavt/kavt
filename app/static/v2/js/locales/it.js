@@ -38,6 +38,8 @@ export default {
   "form.date": "Data",
   "form.today": "Oggi",
   "form.noSubcategory": "Senza sottocategoria",
+  "form.category": "Categoria",
+  "form.subcategory": "Sottocategoria",
   "form.addExpense": "Aggiungi spesa",
   "form.addIncome": "Aggiungi entrata",
   "form.enterAmount": "Inserisci un importo maggiore di zero",
@@ -325,7 +327,6 @@ export default {
 
   "manage.data": "Dati",
   "form.repeat": "Ripeti",
-  "form.noRepeat": "Non ripetere",
   "every.week": "ogni settimana",
   "every.month": "ogni mese",
   "every.year": "ogni anno",

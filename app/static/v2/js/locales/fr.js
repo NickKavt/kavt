@@ -38,6 +38,8 @@ export default {
   "form.date": "Date",
   "form.today": "Aujourd’hui",
   "form.noSubcategory": "Sans sous-catégorie",
+  "form.category": "Catégorie",
+  "form.subcategory": "Sous-catégorie",
   "form.addExpense": "Ajouter la dépense",
   "form.addIncome": "Ajouter le revenu",
   "form.enterAmount": "Saisissez un montant supérieur à zéro",
@@ -325,7 +327,6 @@ export default {
 
   "manage.data": "Données",
   "form.repeat": "Répéter",
-  "form.noRepeat": "Ne pas répéter",
   "every.week": "chaque semaine",
   "every.month": "chaque mois",
   "every.year": "chaque année",

@@ -38,6 +38,8 @@ export default {
   "form.date": "तारीख",
   "form.today": "आज",
   "form.noSubcategory": "बिना उप-श्रेणी",
+  "form.category": "श्रेणी",
+  "form.subcategory": "उप-श्रेणी",
   "form.addExpense": "खर्च जोड़ें",
   "form.addIncome": "आय जोड़ें",
   "form.enterAmount": "शून्य से बड़ी राशि लिखें",
@@ -325,7 +327,6 @@ export default {
 
   "manage.data": "डेटा",
   "form.repeat": "दोहराएँ",
-  "form.noRepeat": "न दोहराएँ",
   "every.week": "हर हफ़्ते",
   "every.month": "हर महीने",
   "every.year": "हर साल",

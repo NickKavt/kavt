@@ -38,6 +38,8 @@ export default {
   "form.date": "Дата",
   "form.today": "Сьогодні",
   "form.noSubcategory": "Без підкатегорії",
+  "form.category": "Категорія",
+  "form.subcategory": "Підкатегорія",
   "form.addExpense": "Додати витрату",
   "form.addIncome": "Додати дохід",
   "form.enterAmount": "Введіть суму більше нуля",
@@ -325,7 +327,6 @@ export default {
 
   "manage.data": "Дані",
   "form.repeat": "Повторювати",
-  "form.noRepeat": "Не повторювати",
   "every.week": "щотижня",
   "every.month": "щомісяця",
   "every.year": "щороку",

@@ -38,6 +38,8 @@ export default {
   "form.date": "日付",
   "form.today": "今日",
   "form.noSubcategory": "サブカテゴリなし",
+  "form.category": "カテゴリ",
+  "form.subcategory": "サブカテゴリ",
   "form.addExpense": "支出を追加",
   "form.addIncome": "収入を追加",
   "form.enterAmount": "0 より大きい金額を入力してください",
@@ -325,7 +327,6 @@ export default {
 
   "manage.data": "データ",
   "form.repeat": "繰り返し",
-  "form.noRepeat": "繰り返さない",
   "every.week": "毎週",
   "every.month": "毎月",
   "every.year": "毎年",
