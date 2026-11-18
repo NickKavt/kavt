@@ -37,6 +37,7 @@ export default {
   "form.note": "विवरण (वैकल्पिक)",
   "form.date": "तारीख",
   "form.today": "आज",
+  "form.addSubcategories": "उप-श्रेणियाँ जोड़ें",
   "form.noSubcategory": "बिना उप-श्रेणी",
   "form.category": "श्रेणी",
   "form.subcategory": "उप-श्रेणी",

@@ -49,7 +49,7 @@ export function Sheet({ title, children, onClose = closeSheet, tall }) {
  * A tap on a choice button keeps the focus where it is: with the amount field focused, the
  * phone keyboard stays up instead of closing and jumping back over the form.
  */
-const keepFocus = e => e.preventDefault();
+export const keepFocus = e => e.preventDefault();
 
 /** Segmented switch: options are [value, label] pairs. */
 export function Seg({ options, value, onChange }) {

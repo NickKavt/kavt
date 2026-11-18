@@ -37,6 +37,7 @@ export default {
   "form.note": "メモ（任意）",
   "form.date": "日付",
   "form.today": "今日",
+  "form.addSubcategories": "サブカテゴリを追加",
   "form.noSubcategory": "サブカテゴリなし",
   "form.category": "カテゴリ",
   "form.subcategory": "サブカテゴリ",

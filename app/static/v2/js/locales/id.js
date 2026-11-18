@@ -37,6 +37,7 @@ export default {
   "form.note": "Keterangan (opsional)",
   "form.date": "Tanggal",
   "form.today": "Hari ini",
+  "form.addSubcategories": "Tambahkan subkategori",
   "form.noSubcategory": "Tanpa subkategori",
   "form.category": "Kategori",
   "form.subcategory": "Subkategori",

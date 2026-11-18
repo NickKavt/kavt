@@ -37,6 +37,7 @@ export default {
   "form.note": "Descripción (opcional)",
   "form.date": "Fecha",
   "form.today": "Hoy",
+  "form.addSubcategories": "Añade subcategorías",
   "form.noSubcategory": "Sin subcategoría",
   "form.category": "Categoría",
   "form.subcategory": "Subcategoría",

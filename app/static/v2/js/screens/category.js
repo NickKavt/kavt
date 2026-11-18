@@ -8,7 +8,7 @@ import { loadDetails, addOperation, refresh, createRecurring } from "../data.js"
 import { evalAmount } from "../calc.js";
 import { haptic, tell, tg } from "../tg.js";
 import { back } from "../router.js";
-import { MoneyField, DateCell, Seg, Empty, ListSelect, lastCurrency, rememberCurrency } from "../ui.js";
+import { MoneyField, DateCell, Seg, Empty, ListSelect, lastCurrency, rememberCurrency, keepFocus } from "../ui.js";
 import { MonthBar, limitState } from "./home.js";
 import { AccountPicker, everydayAccounts, defaultAccount, rememberAccount, accountLabel, BeforeStart } from "./accounts.js";
 
@@ -53,21 +53,19 @@ export function AddForm({ category, details, onSaved, autofocus, catSelect }) {
     if (accounts.find(x => x.id === account)?.currency !== c) setAccount(defaultAccount(accounts, c, s.me?.id)?.id ?? null);
   };
   const subs = details?.subcategories || [];
-  const remembered = lastSub(category.id);
-  const [sub, setSub] = useState(subs.some(x => x.id === remembered) ? remembered : null);
+  // With subcategories, one of them is always picked: the last used, else the first.
+  const pickSub = id => (subs.some(x => x.id === id) ? id : subs[0]?.id ?? null);
+  const [sub, setSub] = useState(() => pickSub(lastSub(category.id)));
   const [busy, setBusy] = useState(false);
   // "" or week, month, year: the operation then repeats from its date (src/recurring.rs).
   const [repeat, setRepeat] = useState("");
   // The month on screen changed: a new operation goes to that month by default.
   useEffect(() => setDate(defaultDate(s.month)), [ymd(s.month)]);
   useEffect(() => {
-    if (sub !== null && !subs.some(x => x.id === sub)) setSub(null);
+    if (!subs.some(x => x.id === sub)) setSub(pickSub(null));
   }, [subs.map(x => x.id).join()]);
   // Another category picked in the same form (quick add): its own last subcategory.
-  useEffect(() => {
-    const r = lastSub(category.id);
-    setSub(subs.some(x => x.id === r) ? r : null);
-  }, [category.id, subs.length > 0]);
+  useEffect(() => setSub(pickSub(lastSub(category.id))), [category.id, subs.length > 0]);
 
   const save = async () => {
     const value = evalAmount(amount);
@@ -104,11 +102,14 @@ export function AddForm({ category, details, onSaved, autofocus, catSelect }) {
 
   const label = category.type === "income" ? t("form.addIncome") : t("form.addExpense");
   return html`<div class="card form">
-    ${(catSelect || subs.length > 0) && html`<div class="pair">
+    <div class="pair">
       ${catSelect}
-      ${subs.length > 0 && html`<${ListSelect} inline title=${t("form.subcategory")} value=${sub} onChange=${setSub}
-        items=${[{ value: null, label: t("form.noSubcategory") }, ...subs.map(x => ({ value: x.id, label: x.name }))]} />`}
-    </div>`}
+      ${subs.length > 0
+        ? html`<${ListSelect} inline title=${t("form.subcategory")} value=${sub} onChange=${setSub}
+            items=${subs.map(x => ({ value: x.id, label: x.name }))} />`
+        : html`<div class="pair-cell">${details && html`<button type="button" class="pair-btn pair-hint"
+            onClick=${() => { haptic(); openSheet("categoryEditor", { id: category.id }); }}><span class="pair-text">＋ ${t("form.addSubcategories")}</span></button>`}</div>`}
+    </div>
     <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${pickCurrency} autofocus=${autofocus} onEnter=${save} />
     <${AccountPicker} accounts=${accounts} value=${account} onChange=${pickAccount}
       label=${category.type === "income" ? t("accounts.toAccount") : ""} />
@@ -119,8 +120,8 @@ export function AddForm({ category, details, onSaved, autofocus, catSelect }) {
         ${repeat
           ? html`<${ListSelect} inline title=${t("form.repeat")} value=${repeat} onChange=${setRepeat}
               items=${EVERY.map(x => ({ value: x, label: "🔁 " + capital(t("every." + x)) }))} />`
-          : html`<button type="button" class="pair-btn" onClick=${() => { haptic(); setRepeat("month"); }}><span class="pair-text">🔁 ${t("form.repeat")}</span></button>`}
-        <button type="button" class=${"switch" + (repeat ? " on" : "")} role="switch" aria-checked=${repeat ? "true" : "false"} aria-label=${t("form.repeat")}
+          : html`<button type="button" class="pair-btn" onPointerDown=${keepFocus} onClick=${() => { haptic(); setRepeat("month"); }}><span class="pair-text">🔁 ${t("form.repeat")}</span></button>`}
+        <button type="button" class=${"switch" + (repeat ? " on" : "")} role="switch" onPointerDown=${keepFocus} aria-checked=${repeat ? "true" : "false"} aria-label=${t("form.repeat")}
           onClick=${() => { haptic(); setRepeat(repeat ? "" : "month"); }}></button>
       </div>
     </div>

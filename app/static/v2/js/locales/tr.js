@@ -37,6 +37,7 @@ export default {
   "form.note": "Açıklama (isteğe bağlı)",
   "form.date": "Tarih",
   "form.today": "Bugün",
+  "form.addSubcategories": "Alt kategori ekleyin",
   "form.noSubcategory": "Alt kategori yok",
   "form.category": "Kategori",
   "form.subcategory": "Alt kategori",

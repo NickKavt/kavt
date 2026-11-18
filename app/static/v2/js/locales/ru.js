@@ -37,6 +37,7 @@ export default {
   "form.note": "Описание (необязательно)",
   "form.date": "Дата",
   "form.today": "Сегодня",
+  "form.addSubcategories": "Добавьте подкатегории",
   "form.noSubcategory": "Без подкатегории",
   "form.category": "Категория",
   "form.subcategory": "Подкатегория",

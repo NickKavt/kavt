@@ -54,7 +54,7 @@ function QuickAdd() {
   return html`<${Sheet} title=${t("quick.title")}>
     <${Seg} options=${[["expense", t("kind.expense")], ["income", t("quick.income")], ["savings", t("kind.savings")]]} value=${kind} onChange=${pickKind} />
     ${category
-      ? html`<${AddForm} key=${kind} category=${category} details=${s.details[category.id]} autofocus onSaved=${closeSheet}
+      ? html`<${AddForm} key=${kind} category=${category} details=${s.details[category.id]} onSaved=${closeSheet}
           catSelect=${kind === "expense" && html`<${ListSelect} inline title=${t("form.category")} value=${catId} onChange=${pick}
             items=${expenses.map(c => ({ value: c.id, label: `${c.emoji} ${c.name}` }))} />`} />`
       : html`<${Empty}>${t("quick.noCategory")}<//>`}
@@ -115,7 +115,7 @@ function EditOperation({ op, categoryId, back }) {
     <div class="form">
       <${MoneyField} value=${amount} onInput=${setAmount} currency=${currency} onCurrency=${pickCurrency} onEnter=${save} />
       ${onAccount && html`<${AccountPicker} accounts=${accounts} value=${account} onChange=${pickAccount} />`}
-      ${subs.length > 0 && !isInitial && html`<${Chips} items=${[[null, t("form.noSubcategory")], ...subs.map(x => [x.id, x.name])]} value=${sub} onChange=${setSub} />`}
+      ${subs.length > 0 && !isInitial && html`<${Chips} items=${subs.map(x => [x.id, x.name])} value=${sub} onChange=${setSub} />`}
       ${!isInitial && html`<input class="field" placeholder=${t("form.note")} value=${note} onInput=${e => setNote(e.currentTarget.value)} maxlength="200" />`}
       <${DateField} value=${date} onChange=${setDate} />
       ${op.rate && op.rate_to && op.rate_to !== op.currency && date === op.transaction_date && currency === op.currency && html`<div class="muted small">${t("rates.opRate", {

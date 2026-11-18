@@ -37,6 +37,7 @@ export default {
   "form.note": "备注（可选）",
   "form.date": "日期",
   "form.today": "今天",
+  "form.addSubcategories": "添加子类别",
   "form.noSubcategory": "无子类别",
   "form.category": "类别",
   "form.subcategory": "子类别",
