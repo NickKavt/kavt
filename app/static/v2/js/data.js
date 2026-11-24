@@ -59,7 +59,7 @@ export function setMonth(month) {
 export async function addOperation({ category, subcategoryId, amount, currency, note, date, accountId }) {
   const body = { amount, currency, note: note || "", transaction_date: date, account_id: accountId ?? null };
   if (category.type === "expense") {
-    await api(`/api/categories/${category.id}/expenses`, { method: "POST", body: { ...body, is_debt: false, subcategory_id: subcategoryId ?? null } });
+    await api(`/api/categories/${category.id}/expenses`, { method: "POST", body: { ...body, subcategory_id: subcategoryId ?? null } });
   } else {
     // Income and savings may sit in a subcategory too; the server books them on the id given.
     const target = subcategoryId ?? category.id;

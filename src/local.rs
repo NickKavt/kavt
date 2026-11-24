@@ -88,7 +88,7 @@ fn token_hash(token: &str) -> String {
 
 /// Opens a session and answers with the user and the session cookie.
 pub(crate) async fn signed_in(state: &AppState, headers: &HeaderMap, addr: SocketAddr, user_id: i64) -> ApiResult<Response> {
-    let ip = limit::client_ip(headers, Some(addr));
+    let ip = limit::client_ip(headers, Some(addr), &state.cfg.trusted_proxies);
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok());
     let token = auth::open_session(&state.db, &state.cfg, user_id, &ip, ua).await?;
     let user = db::user_by_id(&state.db, user_id).await?.ok_or_else(|| ApiError::status(404, "Пользователь не найден"))?;

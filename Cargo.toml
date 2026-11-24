@@ -1,6 +1,6 @@
 [package]
 name = "budget-server"
-version = "1.0.0"
+version = "1.0.1"
 edition = "2024"
 description = "Self-hosted family budget: shared by invite, multi-currency, savings with interest"
 license = "AGPL-3.0-or-later"

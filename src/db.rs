@@ -522,7 +522,6 @@ pub struct TransactionOut {
     pub amount: f64,
     pub currency: String,
     pub note: Option<String>,
-    pub is_debt: bool,
     pub created_at: String,
     #[serde(rename = "type")]
     pub kind: String,
@@ -552,7 +551,7 @@ pub const WITHDRAWAL: &str = "withdrawal";
 
 pub async fn category_transactions(db: &PgPool, kind: &str, ids: &[i64], month: &(String, String)) -> sqlx::Result<Vec<TransactionOut>> {
     let rows = sqlx::query(
-        "SELECT t.id, t.amount, t.currency, t.note, t.is_debt, t.created_at, t.type, t.transaction_date, c.name,
+        "SELECT t.id, t.amount, t.currency, t.note, t.created_at, t.type, t.transaction_date, c.name,
                 COALESCE(u.first_name, u.username, u.telegram_id), t.source, t.pair_id,
                 CASE WHEN t.rate_source NOT IN ('same', 'none') THEN t.rate END, t.rate_to, t.rate_day, t.account_id
          FROM transactions t
@@ -573,18 +572,17 @@ pub async fn category_transactions(db: &PgPool, kind: &str, ids: &[i64], month: 
             amount: r.get(1),
             currency: r.get(2),
             note: r.get(3),
-            is_debt: r.get::<i64, _>(4) != 0,
-            created_at: db_datetime_to_rfc3339(&r.get::<String, _>(5)),
-            kind: r.get(6),
-            transaction_date: r.get(7),
-            subcategory_name: r.get(8),
-            actor_name: r.get(9),
-            source: r.get(10),
-            pair_id: r.get(11),
-            rate: r.get(12),
-            rate_to: r.get(13),
-            rate_day: r.get(14),
-            account_id: r.get(15),
+            created_at: db_datetime_to_rfc3339(&r.get::<String, _>(4)),
+            kind: r.get(5),
+            transaction_date: r.get(6),
+            subcategory_name: r.get(7),
+            actor_name: r.get(8),
+            source: r.get(9),
+            pair_id: r.get(10),
+            rate: r.get(11),
+            rate_to: r.get(12),
+            rate_day: r.get(13),
+            account_id: r.get(14),
         })
         .collect())
 }

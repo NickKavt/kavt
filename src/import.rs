@@ -264,11 +264,11 @@ pub async fn import(State(state): AppRef, headers: HeaderMap, Json(body): Json<I
     if body.rows.len() > MAX_ROWS {
         return Err(ApiError::status(400, "Слишком много строк, разделите файл"));
     }
-    import_rows(&state.db, me.id, me.budget_owner_id, &body.rows, body.dry_run).await.map(Json)
+    import_rows(&state.db, &state.http, me.id, me.budget_owner_id, &body.rows, body.dry_run).await.map(Json)
 }
 
 /// Adds the rows to the budget as `user`, in one transaction; the demo fills its budgets with it.
-pub async fn import_rows(db: &sqlx::PgPool, user: i64, budget: i64, rows: &[ImportRow], dry_run: bool) -> ApiResult<serde_json::Value> {
+pub async fn import_rows(db: &sqlx::PgPool, http: &reqwest::Client, user: i64, budget: i64, rows: &[ImportRow], dry_run: bool) -> ApiResult<serde_json::Value> {
     let mut tx = db.begin().await?;
     let mut cats = Categories { budget, known: HashMap::new(), system: HashMap::new(), created: Vec::new(), tx: &mut tx };
     let (mut added, mut skipped) = (0u64, 0u64);
@@ -400,9 +400,10 @@ pub async fn import_rows(db: &sqlx::PgPool, user: i64, budget: i64, rows: &[Impo
         tracing::info!(budget, added, skipped, "operations imported");
         // Rates of the imported operations, each on its own day, in the background.
         let db = db.clone();
+        let http = http.clone();
         tokio::spawn(async move {
             // A batch at a time; a source that doesn't answer is left for the hourly run.
-            while let Ok(n) = crate::rates::fill(&db, Some(budget)).await {
+            while let Ok(n) = crate::rates::fill(&db, &http, Some(budget)).await {
                 if n == 0 {
                     break;
                 }

@@ -92,6 +92,37 @@ macro_rules! signed {
     };
 }
 
+/// The same expression for the rows of one transfer's other half, which is left out while
+/// its own amount is being checked (`$1`).
+macro_rules! signed_except {
+    () => {
+        "CASE
+            WHEN t.type = 'income' THEN t.amount
+            WHEN t.type = 'expense' THEN -t.amount
+            WHEN t.type = 'savings' AND t.source = 'withdrawal' THEN t.amount
+            WHEN t.type = 'savings' THEN -t.amount
+            WHEN t.source = 'transfer_in' THEN t.amount
+            ELSE -t.amount END"
+    };
+}
+
+/// What an account holds on `day`, leaving out the operations in `skip` (a transfer's own
+/// halves): a transfer may only move money the account has.
+async fn balance_on(db: &PgPool, account: i64, day: &str, skip: &[i64]) -> sqlx::Result<f64> {
+    let sum: f64 = sqlx::query_scalar(concat!(
+        "SELECT a.initial_amount + COALESCE((SELECT SUM(", signed_except!(), ") FROM transactions t
+            WHERE t.account_id = a.id AND t.transaction_date <= $2 AND NOT (t.id = ANY($3))
+              AND (a.initial_date IS NULL OR t.transaction_date >= a.initial_date)), 0)
+         FROM accounts a WHERE a.id = $1"
+    ))
+    .bind(account)
+    .bind(day)
+    .bind(skip)
+    .fetch_one(db)
+    .await?;
+    Ok((sum * 100.0).round() / 100.0)
+}
+
 /// Accounts of a budget with their balances today. A budget gets its first account, in its
 /// main currency, the first time it asks.
 pub async fn list(db: &PgPool, budget: i64, today: Option<NaiveDate>) -> sqlx::Result<Vec<AccountOut>> {
@@ -313,6 +344,10 @@ pub async fn transfer(db: &PgPool, budget: i64, user: i64, t: &TransferIn) -> sq
     }
     let day = t.transaction_date.unwrap_or_else(|| Utc::now().date_naive()).to_string();
     let note = t.note.as_deref().map(str::trim).unwrap_or("").chars().take(200).collect::<String>();
+    // A transfer moves money the account has: a savings account can't be spent past zero.
+    if balance_on(db, t.from_id, &day, &[]).await? < t.amount {
+        return Ok(Err("На счёте недостаточно денег"));
+    }
     let mut tx = db.begin().await?;
     let insert = "INSERT INTO transactions (user_id, account_id, type, amount, currency, note, transaction_date, source)
                   VALUES ($1, $2, 'transfer', $3, $4, $5, $6, $7) RETURNING id";
@@ -350,6 +385,12 @@ pub async fn update_transfer(db: &PgPool, budget: i64, id: i64, t: &TransferIn) 
     }
     let note = t.note.as_deref().map(str::trim).unwrap_or("").chars().take(200).collect::<String>();
     let day = t.transaction_date.map(|d| d.to_string());
+    // Both halves are replaced, so the old ones are left out of what the account has: a
+    // transfer may not grow past the money there.
+    let day_for_balance = day.clone().unwrap_or_else(|| Utc::now().date_naive().to_string());
+    if balance_on(db, t.from_id, &day_for_balance, &[out, into]).await? < t.amount {
+        return Ok(Err("На счёте недостаточно денег"));
+    }
     let mut tx = db.begin().await?;
     let set = "UPDATE transactions SET account_id = $2, amount = $3, currency = $4, note = $5, transaction_date = COALESCE($6, transaction_date) WHERE id = $1";
     sqlx::query(set).bind(out).bind(t.from_id).bind(t.amount).bind(&from).bind(&note).bind(&day).execute(&mut *tx).await?;

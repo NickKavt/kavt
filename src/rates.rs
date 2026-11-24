@@ -50,12 +50,12 @@ pub fn source_name(s: &str) -> Option<&'static str> {
 pub const FALLBACK: &str = "fawaz";
 
 impl Cache {
-    pub async fn get(&self, source: &'static str) -> Result<Rates, String> {
+    pub async fn get(&self, client: &reqwest::Client, source: &'static str) -> Result<Rates, String> {
         if let Some((at, r)) = self.0.lock().unwrap().get(source)
             && at.elapsed() < KEEP {
                 return Ok(r.clone());
             }
-        match fetch(source).await {
+        match fetch(client, source).await {
             Ok(r) => {
                 self.0.lock().unwrap().insert(source, (Instant::now(), r.clone()));
                 Ok(r)
@@ -72,23 +72,25 @@ impl Cache {
     }
 }
 
-fn client() -> Result<reqwest::Client, String> {
+/// One client for every request: it keeps the connections open, so asking several sources
+/// in a row costs one handshake each instead of one per call.
+pub fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .user_agent(concat!("budget-server/", env!("CARGO_PKG_VERSION")))
         .build()
-        .map_err(|e| e.to_string())
+        .unwrap_or_default()
 }
 
 /// Today's rates of a source.
-async fn fetch(source: &'static str) -> Result<Rates, String> {
+async fn fetch(client: &reqwest::Client, source: &'static str) -> Result<Rates, String> {
     let url = match source {
         "tcmb" => "https://www.tcmb.gov.tr/kurlar/today.xml".to_string(),
         "cbr" => "https://www.cbr.ru/scripts/XML_daily.asp".to_string(),
         "fawaz" => "https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@latest/v1/currencies/try.min.json".to_string(),
         _ => "https://api.frankfurter.dev/v1/latest?from=EUR".to_string(),
     };
-    get_parsed(&client()?, source, &url).await?.ok_or_else(|| format!("{url}: not published"))
+    get_parsed(client, source, &url).await?.ok_or_else(|| format!("{url}: not published"))
 }
 
 /// One answer of a source, parsed. `Ok(None)`: the source has nothing for that address
@@ -115,7 +117,7 @@ async fn get_parsed(client: &reqwest::Client, source: &'static str, url: &str) -
 
 /// Rates a source gave for `day`: the last ones published on or before it. A day in the
 /// future is asked as today. Fetched once per day and kept in `daily_rates`.
-pub async fn on_day(db: &PgPool, source: &'static str, day: NaiveDate) -> Result<Rates, String> {
+pub async fn on_day(db: &PgPool, client: &reqwest::Client, source: &'static str, day: NaiveDate) -> Result<Rates, String> {
     let day = day.min(Utc::now().date_naive());
     let key = day.to_string();
     let cached: Option<(String, String)> = sqlx::query_as("SELECT published, in_try::text FROM daily_rates WHERE source = $1 AND day = $2")
@@ -127,7 +129,6 @@ pub async fn on_day(db: &PgPool, source: &'static str, day: NaiveDate) -> Result
         let in_try = serde_json::from_str(&in_try).map_err(|e| e.to_string())?;
         return Ok(Rates { source, date: published, in_try, stale: false });
     }
-    let client = client()?;
     let mut found = None;
     match source {
         // An archive file per working day; step back over weekends and holidays.
@@ -135,26 +136,26 @@ pub async fn on_day(db: &PgPool, source: &'static str, day: NaiveDate) -> Result
             for back in 0..10 {
                 let d = day - chrono::Days::new(back);
                 let url = format!("https://www.tcmb.gov.tr/kurlar/{}/{}.xml", d.format("%Y%m"), d.format("%d%m%Y"));
-                if let Some(r) = get_parsed(&client, source, &url).await? {
+                if let Some(r) = get_parsed(client, source, &url).await? {
                     found = Some(r);
                     break;
                 }
             }
         }
         // Both answer with the last rates published on or before the day asked.
-        "cbr" => found = get_parsed(&client, source, &format!("https://www.cbr.ru/scripts/XML_daily.asp?date_req={}", day.format("%d/%m/%Y"))).await?,
+        "cbr" => found = get_parsed(client, source, &format!("https://www.cbr.ru/scripts/XML_daily.asp?date_req={}", day.format("%d/%m/%Y"))).await?,
         // A file per day; a day not published yet (today, early) falls back to the one before.
         "fawaz" => {
             for back in 0..4 {
                 let d = day - chrono::Days::new(back);
                 let url = format!("https://cdn.jsdelivr.net/npm/@fawazahmed0/currency-api@{d}/v1/currencies/try.min.json");
-                if let Some(r) = get_parsed(&client, source, &url).await? {
+                if let Some(r) = get_parsed(client, source, &url).await? {
                     found = Some(r);
                     break;
                 }
             }
         }
-        _ => found = get_parsed(&client, source, &format!("https://api.frankfurter.dev/v1/{day}?from=EUR")).await?,
+        _ => found = get_parsed(client, source, &format!("https://api.frankfurter.dev/v1/{day}?from=EUR")).await?,
     }
     let rates = found.ok_or_else(|| format!("{source}: no rates for {day}"))?;
     sqlx::query("INSERT INTO daily_rates (source, day, published, in_try) VALUES ($1, $2, $3, $4::jsonb) ON CONFLICT DO NOTHING")
@@ -230,7 +231,7 @@ pub async fn forget(db: &PgPool, id: i64) -> sqlx::Result<()> {
 
 /// Looks up the rate of operations that don't have one yet, on each operation's own day.
 /// A source that doesn't answer is tried again on the next run; nothing else waits for it.
-pub async fn fill(db: &PgPool, budget: Option<i64>) -> sqlx::Result<usize> {
+pub async fn fill(db: &PgPool, client: &reqwest::Client, budget: Option<i64>) -> sqlx::Result<usize> {
     let rows: Vec<(i64, String, String, String, String)> = sqlx::query_as(
         "SELECT t.id, t.currency, t.transaction_date, COALESCE(s.main_currency, '₺'), COALESCE(s.rate_source, 'tcmb')
          FROM transactions t
@@ -263,13 +264,13 @@ pub async fn fill(db: &PgPool, budget: Option<i64>) -> sqlx::Result<usize> {
         if failed.contains(&(src.clone(), date.clone())) {
             continue;
         }
-        match on_day(db, source, day).await {
+        match on_day(db, client, source, day).await {
             Ok(r) => {
                 let mut rate = convert(&r, &currency, &main);
                 let mut r = r;
                 // The chosen source doesn't list this currency: ask the one that lists them all.
                 if rate.is_none() && source != FALLBACK
-                    && let Ok(f) = on_day(db, FALLBACK, day).await {
+                    && let Ok(f) = on_day(db, client, FALLBACK, day).await {
                         rate = convert(&f, &currency, &main);
                         if rate.is_some() {
                             r = f;

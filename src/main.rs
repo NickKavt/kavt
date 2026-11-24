@@ -56,6 +56,10 @@ pub struct Config {
     pub init_data_ttl: i64,
     pub init_data_future_skew: i64,
     pub static_dir: String,
+    /// The addresses of the proxies in front (`BUDGET_TRUSTED_PROXIES`, comma separated). Only
+    /// their `X-Forwarded-For` is believed: anyone else could make up an address and slip past
+    /// the request limits. Empty means the app is reached directly.
+    pub trusted_proxies: Vec<String>,
     /// Where users find the source of the code they are running (AGPL section 13). A modified
     /// copy must point it at its own source with `BUDGET_SOURCE_URL`.
     pub source_url: String,
@@ -124,6 +128,12 @@ impl Config {
             init_data_ttl: env_or("TELEGRAM_INIT_DATA_TTL_SECONDS", 86_400),
             init_data_future_skew: env_or("TELEGRAM_INIT_DATA_FUTURE_SKEW_SECONDS", 300),
             static_dir: env::var("BUDGET_STATIC_DIR").unwrap_or_else(|_| "app/static".into()),
+            trusted_proxies: env::var("BUDGET_TRUSTED_PROXIES")
+                .unwrap_or_default()
+                .split(',')
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect(),
             donate: donate_from_env(),
             source_url: env::var("BUDGET_SOURCE_URL").ok().filter(|v| !v.trim().is_empty()).unwrap_or_else(|| env!("CARGO_PKG_REPOSITORY").into()),
         }
@@ -137,6 +147,11 @@ pub struct AppState {
     /// release is never mixed with files cached from an older one.
     pub v2_version: String,
     pub rates: rates::Cache,
+    /// One HTTP client for every request to the rate sources: its connections are reused.
+    pub http: reqwest::Client,
+    /// Set while a background lookup of the operations' rates is running, so that a burst of
+    /// changes starts one lookup instead of one per change.
+    pub rates_filling: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 type AppRef = State<Arc<AppState>>;
@@ -167,16 +182,11 @@ impl IntoResponse for ApiError {
         let (code, text) = match self {
             ApiError::Status(code, text) => (code, text),
             ApiError::Db(sqlx::Error::RowNotFound) => (StatusCode::INTERNAL_SERVER_ERROR, "no rows".to_string()),
-            ApiError::Db(sqlx::Error::Database(e)) => {
-                let detail = e
-                    .try_downcast_ref::<sqlx::postgres::PgDatabaseError>()
-                    .and_then(|pg| pg.detail().map(|d| format!("\nDETAIL: {d}")))
-                    .unwrap_or_default();
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("db error → ERROR: {}{detail}", e.message()))
-            }
+            // The text of a database error names tables and constraints, so it goes to the log
+            // only: the answer says nothing about what the server runs.
             ApiError::Db(e) => {
                 tracing::error!(error = %e, "database error");
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("db error → {e}"))
+                (StatusCode::INTERNAL_SERVER_ERROR, "Ошибка сервера".to_string())
             }
         };
         if code.is_server_error() {
@@ -229,10 +239,6 @@ async fn health() -> Json<serde_json::Value> {
     Json(json!({ "status": "ok", "time": Utc::now().to_rfc3339() }))
 }
 
-async fn config() -> Json<serde_json::Value> {
-    Json(json!({ "name": env!("CARGO_PKG_NAME"), "version": env!("CARGO_PKG_VERSION") }))
-}
-
 #[derive(Deserialize)]
 struct TelegramAuthIn {
     init_data: String,
@@ -245,7 +251,7 @@ async fn auth_telegram(
     Json(input): Json<TelegramAuthIn>,
 ) -> ApiResult<Response> {
     let tg = auth::validate_init_data(&input.init_data, &state.cfg)?;
-    let ip = limit::client_ip(&headers, Some(addr));
+    let ip = limit::client_ip(&headers, Some(addr), &state.cfg.trusted_proxies);
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok());
     let (user_id, token) = auth::login(&state.db, &state.cfg, &tg, &ip, ua).await?;
     let user = db::user_by_id(&state.db, user_id).await?.ok_or_else(|| ApiError::status(404, "Пользователь не найден"))?;
@@ -348,13 +354,6 @@ async fn delete_session(State(state): AppRef, headers: HeaderMap, Path(suffix): 
     Ok(ok())
 }
 
-async fn perf_startup(body: axum::body::Bytes) -> Json<serde_json::Value> {
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&body) {
-        tracing::info!(target: "budget_perf", beacon = %v, "startup perf beacon");
-    }
-    ok()
-}
-
 // ---------------------------------------------------------------------------
 // Home, categories, statistics
 // ---------------------------------------------------------------------------
@@ -402,7 +401,7 @@ async fn count_limits(state: &AppState, settings: &rates::Settings, cats: &mut [
     if db::limit_foreign(cats) || foreign_expected {
         let chosen = rates::source_name(&settings.rate_source).unwrap_or("tcmb");
         for source in [chosen, rates::FALLBACK] {
-            if let Ok(Ok(r)) = tokio::time::timeout(std::time::Duration::from_secs(3), state.rates.get(source)).await {
+            if let Ok(Ok(r)) = tokio::time::timeout(std::time::Duration::from_secs(3), state.rates.get(&state.http, source)).await {
                 sources.push(r);
             }
         }
@@ -427,24 +426,6 @@ async fn list_categories(State(state): AppRef, headers: HeaderMap) -> ApiResult<
     let me = user(&state, &headers).await?;
     let budget = me.budget_owner_id;
     Ok(Json(db::list_categories(&state.db, budget, None).await?))
-}
-
-async fn stats(State(state): AppRef, headers: HeaderMap, Query(q): Query<MonthQuery>) -> ApiResult<Json<Vec<db::ChartRow>>> {
-    let me = user(&state, &headers).await?;
-    let budget = me.budget_owner_id;
-    Ok(Json(db::stats_by_category(&state.db, budget, &q.bounds()).await?))
-}
-
-async fn month_summary(State(state): AppRef, headers: HeaderMap, Query(q): Query<MonthQuery>) -> ApiResult<Json<db::MonthSummary>> {
-    let me = user(&state, &headers).await?;
-    let budget = me.budget_owner_id;
-    Ok(Json(db::month_summary(&state.db, budget, &q.bounds()).await?))
-}
-
-async fn savings_summary(State(state): AppRef, headers: HeaderMap, Query(q): Query<MonthQuery>) -> ApiResult<Json<Option<db::SavingsSummary>>> {
-    let me = user(&state, &headers).await?;
-    let budget = me.budget_owner_id;
-    Ok(Json(db::savings_summary(&state.db, budget, &q.bounds().1).await?))
 }
 
 #[derive(Deserialize)]
@@ -712,8 +693,8 @@ async fn exchange_rates(State(state): AppRef, headers: HeaderMap, Query(q): Quer
     user(&state, &headers).await?;
     let source = rates::source_name(q.source.as_deref().unwrap_or("tcmb")).ok_or_else(|| ApiError::status(400, "Неизвестный источник курсов"))?;
     match q.day {
-        Some(day) => rates::on_day(&state.db, source, day).await.map(Json).map_err(|_| ApiError::status(502, "Курсы сейчас недоступны")),
-        None => state.rates.get(source).await.map(Json).map_err(|_| ApiError::status(502, "Курсы сейчас недоступны")),
+        Some(day) => rates::on_day(&state.db, &state.http, source, day).await.map(Json).map_err(|_| ApiError::status(502, "Курсы сейчас недоступны")),
+        None => state.rates.get(&state.http, source).await.map(Json).map_err(|_| ApiError::status(502, "Курсы сейчас недоступны")),
     }
 }
 
@@ -753,7 +734,7 @@ async fn put_settings(State(state): AppRef, headers: HeaderMap, Json(s): Json<ra
     }
     let s = rates::Settings { main_currency: main, rate_source: s.rate_source, savings_goal: None };
     rates::save_settings(&state.db, me.budget_owner_id, &s).await?;
-    lookup_rates(&state.db);
+    lookup_rates(&state);
     Ok(Json(s))
 }
 
@@ -865,7 +846,6 @@ struct TransactionCreate {
     amount: f64,
     currency: String,
     note: Option<String>,
-    is_debt: Option<bool>,
     subcategory_id: Option<i64>,
     transaction_date: Option<NaiveDate>,
     account_id: Option<i64>,
@@ -909,7 +889,7 @@ fn check_amount(amount: f64, currency: &str) -> ApiResult<()> {
 
 #[allow(clippy::too_many_arguments)]
 async fn insert_transaction(
-    db: &PgPool, user_id: i64, category_id: Option<i64>, kind: &str, amount: f64, currency: &str, note: Option<&str>, is_debt: bool,
+    state: &AppState, user_id: i64, category_id: Option<i64>, kind: &str, amount: f64, currency: &str, note: Option<&str>,
     date: Option<NaiveDate>, account_id: Option<i64>,
 ) -> ApiResult<Json<serde_json::Value>> {
     check_amount(amount, currency)?;
@@ -917,23 +897,32 @@ async fn insert_transaction(
     let currency = &rates::symbol(currency);
     let date = date.unwrap_or_else(|| Utc::now().date_naive()).to_string();
     let id: i64 = sqlx::query_scalar(
-        "INSERT INTO transactions (user_id, category_id, type, amount, currency, note, is_debt, transaction_date, account_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
+        "INSERT INTO transactions (user_id, category_id, type, amount, currency, note, transaction_date, account_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
     )
-    .bind(user_id).bind(category_id).bind(kind).bind(amount).bind(currency).bind(note).bind(is_debt as i64).bind(date).bind(account_id)
-    .fetch_one(db)
+    .bind(user_id).bind(category_id).bind(kind).bind(amount).bind(currency).bind(note).bind(date).bind(account_id)
+    .fetch_one(&state.db)
     .await?;
-    lookup_rates(db);
+    lookup_rates(state);
     Ok(Json(json!({ "id": id, "ok": true })))
 }
 
 /// Looks up the rates of new or changed operations in the background; the answer doesn't wait.
-fn lookup_rates(db: &PgPool) {
-    let db = db.clone();
+/// One lookup runs at a time: it takes every operation still without a rate anyway, so the
+/// changes made while it runs are picked up by it or by the next one.
+fn lookup_rates(state: &AppState) {
+    use std::sync::atomic::Ordering;
+    if state.rates_filling.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let db = state.db.clone();
+    let http = state.http.clone();
+    let busy = state.rates_filling.clone();
     tokio::spawn(async move {
-        if let Err(e) = rates::fill(&db, None).await {
+        if let Err(e) = rates::fill(&db, &http, None).await {
             tracing::warn!(error = %e, "rates of operations not filled");
         }
+        busy.store(false, Ordering::Release);
     });
 }
 
@@ -950,7 +939,7 @@ async fn create_expense(State(state): AppRef, headers: HeaderMap, Path(category)
         }
     let target = t.subcategory_id.unwrap_or(category);
     check_account_for(&state, budget, t.account_id, &t.currency).await?;
-    insert_transaction(&state.db, me.id, Some(target), "expense", t.amount, &t.currency, t.note.as_deref(), t.is_debt.unwrap_or(false), t.transaction_date, t.account_id).await
+    insert_transaction(&state, me.id, Some(target), "expense", t.amount, &t.currency, t.note.as_deref(), t.transaction_date, t.account_id).await
 }
 
 async fn create_income(State(state): AppRef, headers: HeaderMap, Query(q): Query<CategoryIdQuery>, Json(t): Json<IncomeCreate>) -> ApiResult<Json<serde_json::Value>> {
@@ -967,7 +956,7 @@ async fn create_typed(state: Arc<AppState>, headers: HeaderMap, q: CategoryIdQue
         None => db::ensure_system_root(&state.db, budget, kind).await?,
     };
     check_account_for(&state, budget, t.account_id, &t.currency).await?;
-    insert_transaction(&state.db, me.id, Some(category), kind, t.amount, &t.currency, t.note.as_deref(), false, t.transaction_date, t.account_id).await
+    insert_transaction(&state, me.id, Some(category), kind, t.amount, &t.currency, t.note.as_deref(), t.transaction_date, t.account_id).await
 }
 
 #[derive(Deserialize)]
@@ -1037,7 +1026,7 @@ async fn update_transaction(
     .await?;
     if changes_rate {
         rates::forget(&state.db, id).await?;
-        lookup_rates(&state.db);
+        lookup_rates(&state);
     }
     Ok(ok())
 }
@@ -1308,7 +1297,7 @@ async fn page(path: &str) -> Response {
 // ---------------------------------------------------------------------------
 // Background jobs: expired sessions are removed once a minute
 // ---------------------------------------------------------------------------
-async fn worker(db: PgPool, every: Duration, demo: bool) {
+async fn worker(db: PgPool, http: reqwest::Client, every: Duration, demo: bool) {
     let mut tick = tokio::time::interval(every);
     let mut last_interest = None;
     loop {
@@ -1361,7 +1350,7 @@ async fn worker(db: PgPool, every: Duration, demo: bool) {
             }
             // Operations whose rate source didn't answer before, and those added by
             // recurring payments, interest or an import.
-            if let Err(e) = rates::fill(&db, None).await {
+            if let Err(e) = rates::fill(&db, &http, None).await {
                 tracing::warn!(error = %e, "rates of operations not filled");
             }
             if demo && let Err(e) = demo::expire(&db).await {
@@ -1376,6 +1365,7 @@ async fn worker(db: PgPool, every: Duration, demo: bool) {
 // ---------------------------------------------------------------------------
 fn app(state: Arc<AppState>) -> Router {
     let leak = |l: Limiter| -> &'static Limiter { Box::leak(Box::new(l)) };
+    let proxies = limit::TrustedProxies(std::sync::Arc::new(state.cfg.trusted_proxies.clone()));
     let auth_limit = leak(Limiter::new(3, Duration::from_secs(1)));
     let write_limit = leak(Limiter::new(5, Duration::from_secs(2)));
     // Reads change nothing and need a session; the old 1 per 10 s ran out during normal use.
@@ -1447,9 +1437,6 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/categories", get(list_categories).route_layer(reads.clone()).post(create_category))
         .route("/api/home", get(home).route_layer(reads.clone()))
         .route("/api/categories/{category_id}/details", get(category_details).route_layer(reads.clone()))
-        .route("/api/stats/expenses-by-category", get(stats).route_layer(reads.clone()))
-        .route("/api/month-summary", get(month_summary).route_layer(reads.clone()))
-        .route("/api/savings-summary", get(savings_summary).route_layer(reads.clone()))
         .route("/api/rates", get(exchange_rates).route_layer(reads.clone()))
         .route("/api/settings", get(get_settings).route_layer(reads.clone()))
         .route("/api/accounts", get(money_accounts).route_layer(reads.clone()))
@@ -1467,8 +1454,6 @@ fn app(state: Arc<AppState>) -> Router {
         .route("/api/search", get(search).route_layer(from_fn_with_state(report_limit, limit::limit)))
         .route("/api/sessions", get(list_sessions))
         .route("/api/sessions/{suffix}", delete(delete_session))
-        .route("/api/perf/startup", post(perf_startup))
-        .route("/api/config", get(config))
         .route("/health", get(health))
         .route("/", get(index))
         .route("/app/", get(index))
@@ -1486,7 +1471,31 @@ fn app(state: Arc<AppState>) -> Router {
                 .service(ServeDir::new(&state.cfg.static_dir)),
         )
         .fallback(get(index))
+        // Whose `X-Forwarded-For` the request limits believe; set before the guards run.
+        .layer(axum::middleware::from_fn({
+            let proxies = proxies.clone();
+            move |mut req: axum::extract::Request, next: axum::middleware::Next| {
+                let proxies = proxies.clone();
+                async move {
+                    req.extensions_mut().insert(proxies);
+                    next.run(req).await
+                }
+            }
+        }))
         .layer(axum::middleware::from_fn_with_state(state.clone(), demo::guard))
+        // The interface needs the inline script that loads Telegram's, and htm sets styles
+        // inline; nothing else may be loaded from anywhere but this server.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; script-src 'self' 'unsafe-inline' https://telegram.org; \
+                 style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; \
+                 frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            ),
+        ))
+        .layer(SetResponseHeaderLayer::overriding(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY")))
+        .layer(SetResponseHeaderLayer::overriding(header::X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff")))
+        .layer(SetResponseHeaderLayer::overriding(header::REFERRER_POLICY, HeaderValue::from_static("same-origin")))
         .with_state(state)
 }
 
@@ -1525,7 +1534,8 @@ async fn main() -> anyhow::Result<()> {
     let database_url = env::var("DATABASE_URL").map_err(|_| anyhow::anyhow!("DATABASE_URL must be set"))?;
     let db = PgPoolOptions::new().max_connections(8).acquire_timeout(Duration::from_secs(10)).connect(&database_url).await?;
     migrate::run(&db).await?;
-    tokio::spawn(worker(db.clone(), Duration::from_secs(env_or("BUDGET_WORKER_INTERVAL_SECONDS", 60)), cfg.demo));
+    let http = rates::client();
+    tokio::spawn(worker(db.clone(), http.clone(), Duration::from_secs(env_or("BUDGET_WORKER_INTERVAL_SECONDS", 60)), cfg.demo));
     if cfg.demo {
         tracing::info!("BUDGET_DEMO is on: visitors get demo budgets that are deleted after a day");
     }
@@ -1533,7 +1543,14 @@ async fn main() -> anyhow::Result<()> {
     let host = env::var("HOST").unwrap_or_else(|_| "127.0.0.1".into());
     let port: u16 = env_or("PORT", 8009);
     let v2_version = v2_fingerprint(&format!("{}/v2", cfg.static_dir));
-    let state = Arc::new(AppState { db, cfg, v2_version, rates: rates::Cache::default() });
+    let state = Arc::new(AppState {
+        db,
+        cfg,
+        v2_version,
+        rates: rates::Cache::default(),
+        http,
+        rates_filling: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    });
     let listener = tokio::net::TcpListener::bind((host.as_str(), port)).await?;
     tracing::info!("budget-server {} on http://{host}:{port}", env!("CARGO_PKG_VERSION"));
     axum::serve(listener, app(state).into_make_service_with_connect_info::<SocketAddr>())

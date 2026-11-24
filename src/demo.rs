@@ -301,7 +301,7 @@ async fn fill(state: &AppState, budget: i64, lang: &'static str) -> ApiResult<()
     let today = Utc::now().date_naive();
     let start = first_of_month(today, 2);
     let mut dice = Dice(0x9e37_79b9_7f4a_7c15 ^ (budget as u64).wrapping_mul(0x2545_f491_4f6c_dd1d));
-    crate::import::import_rows(&state.db, budget, budget, &rows(s, start, today, &mut dice), false).await?;
+    crate::import::import_rows(&state.db, &state.http, budget, budget, &rows(s, start, today, &mut dice), false).await?;
 
     let money = |dollars: f64| (dollars * s.scale / s.step).round() * s.step;
     crate::rates::save_goal(&state.db, budget, Some(money(5000.0)), None).await?;
