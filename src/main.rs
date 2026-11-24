@@ -605,7 +605,8 @@ async fn update_category(State(state): AppRef, headers: HeaderMap, Path(id): Pat
 }
 
 async fn delete_category(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
-    let me = user(&state, &headers).await?;
+    // It takes the operations of everyone in the budget with it, so only an admin may.
+    let me = admin(&state, &headers).await?;
     let cat = db::root_category_row(&state.db, me.budget_owner_id, id).await?.ok_or_else(not_found_category)?;
     if cat.kind == "income" || cat.kind == "savings" {
         return Err(ApiError::internal("Системную категорию удалять нельзя"));
@@ -646,7 +647,7 @@ async fn create_subcategory(State(state): AppRef, headers: HeaderMap, Path(paren
 }
 
 async fn update_subcategory(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64>, Json(s): Json<SubcategoryIn>) -> ApiResult<Json<db::SubcategoryOut>> {
-    let me = user(&state, &headers).await?;
+    let me = admin(&state, &headers).await?;
     if db::subcategory(&state.db, me.budget_owner_id, id).await?.is_none() {
         return Err(ApiError::status(404, "Подкатегория не найдена"));
     }
@@ -659,7 +660,7 @@ async fn update_subcategory(State(state): AppRef, headers: HeaderMap, Path(id): 
 
 /// Subcategories are archived from the current month on, so past months keep showing them.
 async fn delete_subcategory(State(state): AppRef, headers: HeaderMap, Path(id): Path<i64>) -> ApiResult<Json<serde_json::Value>> {
-    let me = user(&state, &headers).await?;
+    let me = admin(&state, &headers).await?;
     if db::subcategory(&state.db, me.budget_owner_id, id).await?.is_none() {
         return Err(ApiError::status(404, "Подкатегория не найдена"));
     }
