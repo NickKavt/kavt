@@ -26,7 +26,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 argon2 = "0.6"
 sha1 = "0.11"
-qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+qrcode = { version = "0.15.0", default-features = false, features = ["svg"] }
 
 [profile.release]
 strip = true
